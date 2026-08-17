@@ -9,6 +9,14 @@ an API rather than extending this window.
 """
 
 from vantage.viz.hud import HudRenderer
+from vantage.viz.overlay import class_color, draw_detections
 from vantage.viz.window import FrameSink, NullSink, WindowSink
 
-__all__ = ["FrameSink", "HudRenderer", "NullSink", "WindowSink"]
+__all__ = [
+    "FrameSink",
+    "HudRenderer",
+    "NullSink",
+    "WindowSink",
+    "class_color",
+    "draw_detections",
+]

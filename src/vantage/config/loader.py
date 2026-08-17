@@ -151,6 +151,18 @@ def _coerce(annotation: Any, value: Any, path: str) -> Any:
             return _coerce(args[0], value, path)
         return value  # multi-type unions are passed through to the field validator
 
+    if origin is list:
+        # Without this, a bare string would satisfy the "sequence" duck-type and
+        # then be iterated character by character downstream.
+        if not isinstance(value, list):
+            raise ConfigError(
+                f"{path}: expected a list, got {value!r}. "
+                "In YAML use '[person, car]' or a '- item' block."
+            )
+        args = get_args(annotation)
+        item_type = args[0] if args else str
+        return [_coerce(item_type, item, f"{path}[{index}]") for index, item in enumerate(value)]
+
     if dataclasses.is_dataclass(annotation):
         return _build(annotation, value, path)
 

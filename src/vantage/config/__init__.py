@@ -4,6 +4,7 @@ from vantage.config.loader import default_config_path, load_config
 from vantage.config.schema import (
     AppConfig,
     Backpressure,
+    DetectionConfig,
     DisplayConfig,
     IngestConfig,
     IngestMode,
@@ -15,6 +16,7 @@ from vantage.config.schema import (
 __all__ = [
     "AppConfig",
     "Backpressure",
+    "DetectionConfig",
     "DisplayConfig",
     "IngestConfig",
     "IngestMode",

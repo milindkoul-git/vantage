@@ -37,6 +37,23 @@ ingest:
   realtime: false          # pace recorded sources to their own timeline
   max_frames: null         # stop after N delivered frames
 
+detection:
+  # Off by default so ingestion still runs on a machine with no model
+  # downloaded and no inference runtime installed.
+  enabled: false
+  model: yolox-nano       # see 'vantage models list' for sizes, mAP and licences
+  backend: auto           # auto | onnxruntime | openvino  (auto prefers openvino)
+  device: auto            # auto | cpu | gpu  (openvino only; auto uses a real GPU if present)
+  confidence: 0.35
+  nms_iou: 0.45
+  max_detections: 100
+  classes: null           # e.g. [person, car] - narrower is faster and better practice
+  interval: 1             # run the detector every Nth delivered frame
+  warmup: 2               # blank passes at startup to absorb graph compilation
+  threads: 0              # 0 = runtime decides
+  model_dir: models       # weights are downloaded on demand, never committed
+  allow_download: true    # false for air-gapped deployments
+
 display:
   enabled: true
   window_name: "Vantage - Ingestion"

@@ -176,6 +176,86 @@ class IngestConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class DetectionConfig:
+    """Phase 2 object detection.
+
+    Off by default: ingestion must keep working on machines with no model
+    downloaded and no inference runtime installed.
+    """
+
+    enabled: bool = False
+    model: str = "yolox-nano"
+    """Catalog key. ``vantage models list`` shows sizes, accuracy and licences."""
+
+    backend: str = "auto"
+    """``auto`` | ``onnxruntime`` | ``openvino``. ``auto`` prefers OpenVINO,
+    the only one of the two that can reach an Intel iGPU."""
+
+    device: str = "auto"
+    """``auto`` | ``cpu`` | ``gpu``. OpenVINO only; ``auto`` uses the GPU when
+    one is genuinely present and says which it chose."""
+
+    confidence: float = 0.35
+    nms_iou: float = 0.45
+    max_detections: int = 100
+
+    classes: list[str] | None = None
+    """Keep only these labels, e.g. ``[person]``. ``null`` keeps everything.
+    Narrowing to what an application actually needs is both faster and better
+    privacy practice than detecting everything and discarding most of it."""
+
+    interval: int = 1
+    """Run the detector on every Nth *delivered* frame.
+
+    The single most effective CPU-fit lever: display stays smooth at full frame
+    rate while inference runs at a sustainable fraction of it. Detections from
+    the most recent pass are carried forward on skipped frames."""
+
+    warmup: int = 2
+    """Inference passes on a blank frame at startup, to absorb graph
+    compilation and clock ramp-up before the first real frame arrives."""
+
+    threads: int = 0
+    """CPU threads for inference; ``0`` lets the runtime decide. Pin it when
+    several cameras share a machine and must not fight over cores."""
+
+    model_dir: str = "models"
+    allow_download: bool = True
+    """Fetch missing weights automatically. Turn off for air-gapped
+    deployments, where a missing model should fail loudly instead."""
+
+    def __post_init__(self) -> None:
+        if not 0.0 < self.confidence < 1.0:
+            raise ConfigError(
+                f"detection.confidence must be between 0 and 1 (exclusive), got {self.confidence}"
+            )
+        if not 0.0 <= self.nms_iou <= 1.0:
+            raise ConfigError(f"detection.nms_iou must be between 0 and 1, got {self.nms_iou}")
+        if self.max_detections < 1:
+            raise ConfigError("detection.max_detections must be >= 1")
+        if self.interval < 1:
+            raise ConfigError("detection.interval must be >= 1 (1 = detect on every frame)")
+        if self.warmup < 0:
+            raise ConfigError("detection.warmup must be >= 0")
+        if self.threads < 0:
+            raise ConfigError("detection.threads must be >= 0 (0 = runtime decides)")
+        if self.backend not in {"auto", "onnxruntime", "openvino"}:
+            raise ConfigError(
+                f"detection.backend must be 'auto', 'onnxruntime' or 'openvino', "
+                f"got {self.backend!r}"
+            )
+        if self.device not in {"auto", "cpu", "gpu"}:
+            raise ConfigError(
+                f"detection.device must be 'auto', 'cpu' or 'gpu', got {self.device!r}"
+            )
+        if self.classes is not None and not self.classes:
+            raise ConfigError(
+                "detection.classes is an empty list, which would discard every "
+                "detection. Use null to keep all classes."
+            )
+
+
+@dataclass(frozen=True, slots=True)
 class DisplayConfig:
     """The Phase 1 diagnostic viewer.
 
@@ -227,4 +307,5 @@ class VantageConfig:
     app: AppConfig = field(default_factory=AppConfig)
     source: SourceConfig = field(default_factory=SourceConfig)
     ingest: IngestConfig = field(default_factory=IngestConfig)
+    detection: DetectionConfig = field(default_factory=DetectionConfig)
     display: DisplayConfig = field(default_factory=DisplayConfig)

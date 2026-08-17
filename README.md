@@ -3,10 +3,10 @@
 A modular platform for understanding what happens in video over time — not just what
 appears in a single frame.
 
-**Status: Phase 1 (video ingestion) complete.** No detection, tracking, pose, events,
-storage, dashboard, or identity functionality exists yet. Those arrive in later phases,
-deliberately and one at a time. Nothing in this repository is mocked or stubbed: what is
-here works, and what is not here is absent rather than faked.
+**Status: Phases 1-2 complete — video ingestion and object detection.** No tracking, pose,
+events, storage, dashboard, or identity functionality exists yet. Those arrive in later
+phases, deliberately and one at a time. Nothing in this repository is mocked or stubbed:
+what is here works, and what is not here is absent rather than faked.
 
 ---
 
@@ -28,7 +28,7 @@ CameraSource ─▶ Frame ─▶ DetectionEngine ─▶ TrackingEngine ─▶ Po
                                        IdentityResolver (optional, much later)
 ```
 
-Phase 1 builds the leftmost two boxes and the contract between them.
+Phases 1-2 build the leftmost three boxes and the contracts between them.
 
 ### Privacy stance
 
@@ -53,7 +53,29 @@ A video ingestion subsystem that is genuinely production-shaped rather than a ca
   percentiles, queue depth, dropped and skipped frame counts.
 - **A diagnostic viewer** with a telemetry HUD.
 - **Graceful shutdown** on Ctrl+C, verified to release the device and join its thread.
-- **199 tests**, none of which need a camera.
+
+## 2b. What Phase 2 delivers
+
+Object detection, behind an interface that makes both the model and the runtime
+replaceable:
+
+- **Two interchangeable inference backends** — ONNX Runtime (portable CPU baseline) and
+  OpenVINO (Intel CPU **and** iGPU) — reading the same ONNX file and verified to produce
+  identical detections on CPU.
+- **YOLOX detectors** (Apache-2.0) in three sizes, fetched on demand and **verified
+  against pinned SHA-256 checksums**; weights are never committed.
+- **Detections in original-frame pixel coordinates**, so nothing downstream ever learns
+  that the detector letterboxed anything.
+- **Class-aware NMS**, so a person standing in front of a car cannot suppress the car.
+- **Class filtering** (`--classes person,car`) and **frame-interval inference**
+  (`--detect-interval N`) — the two levers that make a detector fit CPU-only hardware.
+- **A real benchmark command** (`vantage bench`) that measures this machine rather than
+  quoting someone else's numbers.
+- **Box overlay + detection telemetry on the HUD**, with carried-forward detections drawn
+  dashed so a stale box is never mistaken for a fresh one.
+
+**284 tests** — 276 needing neither a camera, a model file, nor an inference runtime, plus
+8 that exercise real weights and skip cleanly without them.
 
 ---
 
@@ -68,7 +90,8 @@ python -m venv .venv
 .venv\Scripts\activate          # Windows
 # source .venv/bin/activate     # Linux / macOS
 
-pip install -e ".[dev]"
+pip install -e ".[dev]"           # ingestion only
+pip install -e ".[dev,detect]"    # + object detection (onnxruntime + openvino)
 ```
 
 Then, in order of "does it work at all" to "does it work with my hardware":
@@ -78,6 +101,15 @@ vantage info                    # what the platform sees: OS, OpenCV, backends, 
 vantage run                     # synthetic video - works on any machine, no camera needed
 vantage probe                   # which camera indices actually respond
 vantage run --source webcam:0   # your camera, with the telemetry HUD
+```
+
+### Detection (Phase 2)
+
+```bash
+vantage models list             # available detectors: size, accuracy, licence, cached?
+vantage models pull yolox-nano  # ~3.7 MB, checksum-verified
+vantage bench                   # measure the backends on YOUR machine
+vantage run --source webcam:0 --detect
 ```
 
 Press `q` or `Esc` to quit, `s` to save a PNG snapshot, `h` to toggle the HUD.
@@ -100,6 +132,12 @@ vantage run --source webcam:0 --width 1280 --height 720 --fourcc MJPG
 
 # Any config key can be overridden directly
 vantage run --set ingest.queue_size=16 --set ingest.backpressure=block
+
+# Detect only people, on the Intel iGPU, inferring on every 3rd frame
+vantage run --source webcam:0 --detect --device gpu --classes person --detect-interval 3
+
+# Compare backends on your own footage
+vantage bench --image my_photo.jpg --frames 100
 ```
 
 Run the tests:
@@ -166,10 +204,33 @@ vantage/
 │  ├─ pacing.py       stride filter and rate pacers
 │  └─ pipeline.py     ties it together; yields frames, measures everything
 │
+├─ perception/    Phase 2: turning pixels into structured observations
+│  ├─ contracts.py   BoundingBox, Detection, DetectionResult
+│  ├─ engine.py      composes an adapter with a backend
+│  ├─ adapters/      model families: input shaping + output decoding (YOLOX)
+│  ├─ backends/      runtimes: ONNX Runtime, OpenVINO
+│  ├─ catalog.py     model registry with URLs, checksums and licences
+│  ├─ store.py       download, verify, cache
+│  ├─ nms.py         class-aware non-maximum suppression
+│  └─ benchmark.py   backend measurement
+│
 ├─ viz/           diagnostic display only; contains no analysis logic
 ├─ app.py         composition root - the only module that knows about all layers
 └─ cli.py         command-line entry point
 ```
+
+### Why detection splits into adapter + backend
+
+Three things change for different reasons, so they are three types:
+
+| Concern | Type | Changing it means |
+|---|---|---|
+| How a model family shapes input and decodes output | `ModelAdapter` | Adding RT-DETR touches one file |
+| How a runtime executes a graph | `InferenceBackend` | Swapping ONNX Runtime for OpenVINO changes no detections |
+| Turning that into records | `DetectionEngine` | The only type the rest of the platform sees |
+
+This is verified rather than asserted: `test_cpu_backends_produce_the_same_detections`
+runs both runtimes over the same image and requires identical output.
 
 Dependencies point inward. `core` imports nothing from the platform; `ingestion` imports
 `core`; `viz` renders what `ingestion` measured; `app` wires them together.
@@ -235,6 +296,24 @@ was corrected. `RateMeter` now smooths the inter-arrival interval and inverts it
 
 An unknown key is an error with a suggested correction, never a silently ignored setting.
 A typo'd `targt_fps` that quietly does nothing costs an afternoon.
+
+### The detector was chosen on licence first, accuracy second
+
+The obvious default — Ultralytics YOLOv8/v11 — is **AGPL-3.0**. Building a product on it
+obliges you to open-source that product or buy a commercial licence. That constraint
+propagates from a single `pip install` into the whole platform, so it is decided here
+rather than discovered in a legal review.
+
+**YOLOX is Apache-2.0**, ships official pre-exported ONNX weights, and happens to expect
+**BGR 0-255 input** — exactly what `Frame` already carries, so there is no colour
+conversion on the hot path. Every catalog entry records its licence next to its URL.
+
+### Model weights are treated as untrusted remote content
+
+Pinned SHA-256, verified on every load rather than trusted because the file exists;
+downloads written to a temp file and renamed only after the hash matches, so an
+interrupted download can never masquerade as a cached model; a mismatch is a loud error
+naming both digests, never a silent re-download that papers over a substituted upstream.
 
 ---
 
@@ -302,9 +381,28 @@ display:
 Measured on the development machine (Windows 11, i5-13500H, 16 GB RAM, Intel Iris Xe, no
 CUDA, Python 3.13.1, OpenCV 5.0.0):
 
+### Detection benchmark (`vantage bench`, yolox-nano @ 416x416, 60 iterations)
+
+| Backend | Device | Precision | Mean | p50 | p95 | FPS ceiling |
+|---|---|---|---|---|---|---|
+| onnxruntime | cpu | fp32 | 19.94 ms | 13.55 ms | 54.09 ms | 50.1 |
+| openvino | cpu | fp32 | 47.24 ms | 50.84 ms | 75.55 ms | 21.2 |
+| **openvino** | **gpu (Iris Xe)** | **fp16** | **13.68 ms** | **13.43 ms** | **17.07 ms** | **73.1** |
+
+The headline is the **p95 column, not the mean**. The iGPU is ~1.5x faster on average but
+**3x more consistent**, because CPU inference competes with everything else on the machine
+while the iGPU sits idle otherwise. For a realtime pipeline the tail is what a viewer
+actually perceives as stutter. The CPU numbers move noticeably between runs; the GPU
+numbers do not.
+
+Two caveats stated honestly: OpenVINO runs **fp16** on Intel GPUs, so GPU detections differ
+very slightly from CPU ones (a marginal 0.31-confidence box appears on CPU and not GPU) —
+this is reported in the `PREC` column rather than hidden. And ONNX Runtime beating OpenVINO
+*on CPU* here is the opposite of the folklore, which is exactly why the benchmark exists.
+
 | Check | Result |
 |---|---|
-| Test suite | 199 passed in ~1.5 s, no camera required |
+| Test suite | 276 passed in ~1.8 s with no camera, model or runtime; +8 model-backed |
 | Synthetic source, headless | ~2 400 fps at 640×480 |
 | Webcam `webcam:0`, headless | 30.3 fps mean over 60 frames, 0 dropped, queue peak 1/8, acquisition p50 6.1 ms, delivery latency p95 0.3 ms |
 | File playback (960×540, 100 frames) | 100/100 delivered, 0 dropped, `block` policy auto-selected, ~846 fps decode |
@@ -315,12 +413,40 @@ CUDA, Python 3.13.1, OpenCV 5.0.0):
 Backend measurement that set the Windows default: on this webcam, **MSMF sustained ~30 fps
 and reported usable FPS metadata; DirectShow managed ~15 fps and reported none.**
 
+End-to-end Phase 2: file source → pipeline → detection → overlay → HUD, 30 frames with
+`interval=2`, produced 15 detection passes at **8.3 ms mean on the iGPU** (120 fps ceiling),
+correctly labelling dog / bicycle / car and drawing carried-forward boxes dashed.
+
 ---
 
 ## 8. Known limitations
 
-**Phase 1 scope.** No detection, tracking, pose, activity recognition, events, alerts,
-storage, dashboard, multi-camera orchestration, or identity. By design.
+**Scope.** No tracking, pose, activity recognition, events, alerts, storage, dashboard,
+multi-camera orchestration, or identity. By design.
+
+**OpenVINO compiled-model caching is deliberately disabled.** Enabling `CACHE_DIR` looks
+like free startup time and costs a crash: on this Iris Xe / OpenVINO 2026.3 combination,
+*loading* a cached GPU blob segfaults the process during interpreter shutdown — after
+inference has completed and returned correct results, so it presents as a mysterious exit
+code 139 rather than an obvious failure. Bisected to `CACHE_DIR` specifically; writing the
+cache is clean, reading it back is not. The optimisation was worth ~0.9 s of one-off
+startup (1058 ms → 182 ms), which is not a trade worth a crash. **Do not re-enable it
+without re-testing that exact path** — the comment in `openvino_backend.py` says so too.
+
+**Detection runs on the consumer thread.** Inference is synchronous inside the frame loop,
+so a slow model directly reduces delivered FPS on live sources (the queue then drops frames
+to keep latency bounded, exactly as designed). Moving inference to its own stage with its
+own queue is a Phase 12 concern; `detection.interval` is the lever until then.
+
+**GPU results differ slightly from CPU.** Intel GPUs execute fp16 by default. Marginal
+low-confidence detections can appear on one and not the other. Reported in the `PREC`
+column rather than papered over.
+
+**Only YOLOX is implemented.** The adapter seam exists for RT-DETR and D-FINE, but adding
+them is future work, not something already half-built.
+
+**`yolox-s` is catalogued but not realtime here.** 640x640 input on this hardware is an
+accuracy option for offline analysis, not for live camera work.
 
 **One source per pipeline.** `IngestionPipeline` handles a single source. Multi-camera
 support needs a manager that owns several pipelines and merges their telemetry; `Frame`
@@ -359,19 +485,22 @@ outside a checkout, the bundled default is not located and built-in defaults app
 
 Phase 1 is done. The order below reflects where the evidence points, not a fixed plan.
 
-**Phase 2 — Object detection (next).** Given no CUDA and an Intel Iris Xe iGPU, the
-expected choice is **ONNX Runtime with the OpenVINO execution provider**, benchmarked
-against plain CPU ONNX Runtime, with a small modern detector (RT-DETR / YOLO-family, or
-`yolov8n`-class) exported to ONNX and INT8-quantised. PyTorch is deliberately *not*
-assumed: the CPU-only build installed on this machine would very likely lose to both.
-The deliverable is a `DetectionEngine` producing a `Detection` record — boxes, class,
-confidence, and the `Frame` it came from — and a benchmark table so the choice is made on
-numbers rather than reputation.
+**Phase 2 — Object detection. Done.** One correction worth recording: Phase 1 predicted
+"ONNX Runtime with the OpenVINO execution provider". That turned out to be the wrong
+packaging — the stock `onnxruntime` wheel ships no OpenVINO EP, and `onnxruntime-openvino`
+*replaces* it (same module name), which is a trap to hand a collaborator. Native OpenVINO
+reads ONNX directly and reaches the iGPU, so the two runtimes now sit side by side as
+independent backends instead. INT8 quantisation was also deferred: fp16 on the iGPU already
+clears 73 fps on a 30 fps pipeline, so the accuracy cost buys nothing yet.
 
-**Phase 3 — Multi-object tracking.** ByteTrack first (no appearance model, no GPU cost,
-strong on the accuracy/compute trade-off), with the synthetic source providing exact ground
-truth for identity-switch measurement. Produces the stable anonymous `entity_id`
-(`person_17`) the rest of the platform builds on.
+**Phase 3 — Multi-object tracking (next).** ByteTrack first: no appearance model, no GPU
+cost, and strong on the accuracy/compute trade-off — which matters because detection now
+occupies the iGPU. It consumes `DetectionResult` and produces the stable anonymous
+`entity_id` (`person_17`) the rest of the platform builds on. The synthetic source already
+provides exact ground truth via `SyntheticSource.object_states(index)`, so identity switches
+can be *measured* rather than eyeballed. The main open design question is where tracking
+runs given that `detection.interval` means detections arrive irregularly — trackers that
+assume a fixed timestep will need the real elapsed time, which `Frame` already carries.
 
 **Phase 4 onward — Pose and object state → temporal activity → spatial/interaction
 analysis → event engine → observation storage → dashboard → identity (optional) →
@@ -411,10 +540,13 @@ audit logging such a subsystem requires.
 ## 10. Development
 
 ```bash
-pytest                          # 199 tests, ~1.5 s, no hardware needed
+pytest                          # 284 tests, ~2 s
+pytest -m "not model"           # 276 tests needing no weights and no runtime
+pytest -m model                 # 8 tests against real weights (skip if absent)
 pytest -m hardware              # (reserved) tests that need a physical camera
 vantage info --json             # environment report for a bug reference
 vantage run --log-format json   # structured logs for aggregation
+vantage bench --json            # backend measurements as machine-readable output
 ```
 
 Conventions: type hints throughout, dependencies pointing inward, no silent exception

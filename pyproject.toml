@@ -21,6 +21,12 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# Detection is optional so that ingestion keeps working on a machine with no
+# inference runtime. Install one (or both, to compare) with: pip install -e ".[detect]"
+detect = [
+    "onnxruntime>=1.20",   # portable CPU baseline
+    "openvino>=2025.0",    # Intel CPU/iGPU; the only path to an Intel GPU here
+]
 dev = [
     "pytest>=8.0",
 ]
@@ -36,4 +42,5 @@ testpaths = ["tests"]
 addopts = "-q"
 markers = [
     "hardware: tests that require a physical camera (deselected by default)",
+    "model: tests that require downloaded weights and an inference runtime",
 ]

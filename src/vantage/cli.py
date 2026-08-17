@@ -34,7 +34,7 @@ EXIT_ERROR = 1
 EXIT_INTERRUPTED = 130
 
 
-COMMANDS = ("run", "probe", "info", "make-sample")
+COMMANDS = ("run", "probe", "info", "make-sample", "models", "bench")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -94,6 +94,24 @@ def build_parser() -> argparse.ArgumentParser:
         help="what to discard when the consumer falls behind",
     )
     run.add_argument("--realtime", action="store_true", help="pace recorded input to its own timeline")
+    run.add_argument("--detect", action="store_true", help="enable object detection")
+    run.add_argument("--model", default=None, help="detector to use (see 'vantage models list')")
+    run.add_argument(
+        "--detect-backend", choices=["auto", "onnxruntime", "openvino"], default=None
+    )
+    run.add_argument("--device", choices=["auto", "cpu", "gpu"], default=None)
+    run.add_argument("--conf", type=float, default=None, help="detection confidence threshold")
+    run.add_argument(
+        "--detect-interval",
+        type=int,
+        default=None,
+        help="run the detector on every Nth delivered frame (1 = every frame)",
+    )
+    run.add_argument(
+        "--classes",
+        default=None,
+        help="comma-separated labels to keep, e.g. --classes person,car",
+    )
     run.add_argument("--no-display", action="store_true", help="run headless")
     run.add_argument("--no-hud", action="store_true", help="show video without the telemetry panel")
     run.add_argument("--scale", type=float, default=None, help="window scale factor")
@@ -110,6 +128,34 @@ def build_parser() -> argparse.ArgumentParser:
         "info", parents=[common], help="report the environment as the platform sees it"
     )
     info.add_argument("--json", action="store_true")
+
+    models = sub.add_parser(
+        "models", parents=[common], help="list, fetch and verify detection models"
+    )
+    models.add_argument(
+        "action", choices=["list", "pull", "remove", "verify"], nargs="?", default="list"
+    )
+    models.add_argument("name", nargs="?", default=None, help="catalog key, e.g. yolox-nano")
+    models.add_argument("--model-dir", default=None, help="where models are cached")
+    models.add_argument("--json", action="store_true")
+
+    bench = sub.add_parser(
+        "bench", parents=[common], help="benchmark detection backends on this machine"
+    )
+    bench.add_argument("--model", default=None, help="model to benchmark (default: yolox-nano)")
+    bench.add_argument(
+        "--backends",
+        default="all",
+        help="comma-separated backend/device pairs, e.g. 'onnxruntime:cpu,openvino:gpu', "
+        "or 'all' to try every combination this machine supports",
+    )
+    bench.add_argument("--frames", type=int, default=50, help="timed iterations per backend")
+    bench.add_argument("--warmup", type=int, default=5, help="untimed iterations per backend")
+    bench.add_argument(
+        "--image", default=None, help="image to benchmark on (default: a synthetic frame)"
+    )
+    bench.add_argument("--model-dir", default=None)
+    bench.add_argument("--json", action="store_true")
 
     sample = sub.add_parser(
         "make-sample", parents=[common], help="write a deterministic synthetic clip"
@@ -141,6 +187,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             return _cmd_info(args)
         if command == "make-sample":
             return _cmd_make_sample(args)
+        if command == "models":
+            return _cmd_models(args)
+        if command == "bench":
+            return _cmd_bench(args)
         parser.error(f"unknown command {command!r}")
         return EXIT_ERROR
     except VantageError as exc:
@@ -232,6 +282,125 @@ def _cmd_info(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+def _cmd_models(args: argparse.Namespace) -> int:
+    from vantage.perception.catalog import CATALOG, get_model_spec
+    from vantage.perception.store import ModelStore
+
+    store = ModelStore(args.model_dir or "models")
+
+    if args.action == "list":
+        entries = []
+        for spec in CATALOG.values():
+            cached = store.is_cached(spec)
+            entries.append(
+                {
+                    "key": spec.key,
+                    "input": f"{spec.input_size[1]}x{spec.input_size[0]}",
+                    "size_mb": round(spec.size_bytes / 1e6, 1),
+                    "map": spec.map_50_95,
+                    "license": spec.license,
+                    "cached": cached,
+                    "path": str(store.path_for(spec)) if cached else None,
+                    "source": spec.source,
+                }
+            )
+        if args.json:
+            print(json.dumps({"model_dir": str(store.directory), "models": entries}, indent=2))
+            return EXIT_OK
+
+        print(f"Models (cache: {store.directory})\n")
+        print(f"  {'KEY':13s} {'INPUT':9s} {'SIZE':>7s} {'mAP':>6s}  {'LICENSE':11s} STATUS")
+        for entry in entries:
+            status = "cached" if entry["cached"] else "not downloaded"
+            accuracy = f"{entry['map']:.1f}" if entry["map"] else "n/a"
+            print(
+                f"  {entry['key']:13s} {entry['input']:9s} {entry['size_mb']:5.1f}MB "
+                f"{accuracy:>6s}  {entry['license']:11s} {status}"
+            )
+        print("\n  Fetch one with: vantage models pull <KEY>")
+        print("  Weights are downloaded on demand and verified against a pinned SHA-256.")
+        return EXIT_OK
+
+    if not args.name:
+        raise VantageError(f"'vantage models {args.action}' needs a model name, e.g. yolox-nano")
+    spec = get_model_spec(args.name)
+
+    if args.action == "pull":
+        path = store.ensure(spec, progress=_download_progress)
+        print(f"\r{spec.key}: ready at {path} ({spec.size_bytes / 1e6:.1f} MB, {spec.license})")
+        return EXIT_OK
+
+    if args.action == "verify":
+        if not store.is_cached(spec):
+            print(f"{spec.key}: not downloaded")
+            return EXIT_ERROR
+        store.ensure(spec, allow_download=False)  # raises on mismatch
+        print(f"{spec.key}: checksum verified ({spec.sha256[:16]}...)")
+        return EXIT_OK
+
+    if args.action == "remove":
+        removed = store.remove(spec)
+        print(f"{spec.key}: {'removed' if removed else 'was not cached'}")
+        return EXIT_OK
+
+    return EXIT_ERROR
+
+
+def _download_progress(done: int, total: int) -> None:
+    if total <= 0:
+        return
+    percent = 100.0 * done / total
+    print(f"\rdownloading... {percent:5.1f}% ({done / 1e6:.1f}/{total / 1e6:.1f} MB)", end="")
+
+
+def _cmd_bench(args: argparse.Namespace) -> int:
+    """Measure detection latency per backend so the choice rests on numbers."""
+    import numpy as np
+
+    from vantage.perception.backends import available_backends
+    from vantage.perception.benchmark import benchmark, format_table, resolve_targets
+    from vantage.perception.catalog import DEFAULT_MODEL
+
+    model = args.model or DEFAULT_MODEL
+    targets = resolve_targets(args.backends, available_backends())
+    if not targets:
+        raise VantageError(
+            "no inference backend is installed. Try: pip install onnxruntime openvino"
+        )
+
+    if args.image:
+        import cv2
+
+        image = cv2.imread(args.image)
+        if image is None:
+            raise VantageError(f"could not read benchmark image: {args.image}")
+        image_label = args.image
+    else:
+        # A synthetic frame keeps the benchmark runnable anywhere. It measures
+        # throughput honestly; it says nothing about accuracy, since generated
+        # shapes are not COCO objects.
+        from vantage.ingestion.synthetic import SyntheticSource
+
+        with SyntheticSource(width=1280, height=720, frames=1, objects=5) as source:
+            image = np.array(source.read().image)
+        image_label = "synthetic 1280x720"
+
+    results = benchmark(
+        model=model,
+        targets=targets,
+        image=image,
+        iterations=args.frames,
+        warmup=args.warmup,
+        model_dir=args.model_dir or "models",
+    )
+
+    if args.json:
+        print(json.dumps({"model": model, "image": image_label, "results": results}, indent=2))
+    else:
+        print(format_table(model, image_label, results))
+    return EXIT_OK
+
+
 def _cmd_make_sample(args: argparse.Namespace) -> int:
     import cv2
 
@@ -299,6 +468,11 @@ def _flag_overrides(args: argparse.Namespace) -> list[str]:
         ("ingest.mode", args.mode),
         ("ingest.backpressure", args.backpressure),
         ("display.scale", args.scale),
+        ("detection.model", args.model),
+        ("detection.backend", args.detect_backend),
+        ("detection.device", args.device),
+        ("detection.confidence", args.conf),
+        ("detection.interval", args.detect_interval),
         # The logging flags must go through the config too, or the reload inside
         # _cmd_run would quietly discard them.
         ("app.log_level", args.log_level),
@@ -315,6 +489,13 @@ def _flag_overrides(args: argparse.Namespace) -> list[str]:
         overrides.append("display.enabled=false")
     if args.no_hud:
         overrides.append("display.hud=false")
+    if args.detect:
+        overrides.append("detection.enabled=true")
+    if args.classes:
+        # Rendered as a YAML flow sequence so the loader parses it as a real
+        # list; a bare string would be iterated character by character.
+        names = [name.strip() for name in args.classes.split(",") if name.strip()]
+        overrides.append("detection.classes=[" + ", ".join(names) + "]")
     return overrides
 
 

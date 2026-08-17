@@ -16,11 +16,16 @@ is diagnosed rather than guessed at.
 from __future__ import annotations
 
 from collections import deque
+from typing import TYPE_CHECKING
 
 import cv2
 import numpy as np
 
 from vantage.ingestion.pipeline import PipelineStats
+
+if TYPE_CHECKING:  # imported for typing only - viz must not require a detector
+    from vantage.perception.contracts import DetectionResult
+    from vantage.perception.engine import EngineInfo
 
 _FONT = cv2.FONT_HERSHEY_SIMPLEX
 _WHITE = (245, 245, 245)
@@ -44,6 +49,8 @@ class HudRenderer:
         stats: PipelineStats,
         frame_index: int,
         extra: list[str] | None = None,
+        detection: "DetectionResult | None" = None,
+        engine: "EngineInfo | None" = None,
     ) -> np.ndarray:
         """Return an annotated copy of ``image``.
 
@@ -54,6 +61,8 @@ class HudRenderer:
         self._fps_history.append(stats.delivery_fps)
 
         lines = self._compose(stats, frame_index)
+        if engine is not None:
+            lines.extend(self._compose_detection(detection, engine))
         if extra:
             lines.extend(("", value, _DIM) for value in extra)
 
@@ -111,6 +120,40 @@ class HudRenderer:
         if stats.reconnects:
             rows.append(("reconnects", str(stats.reconnects), _WARN))
         rows.append(("elapsed", f"{stats.elapsed_s:.1f} s", _DIM))
+        return rows
+
+    def _compose_detection(
+        self, detection: "DetectionResult | None", engine: "EngineInfo | None"
+    ) -> list[tuple[str, str, tuple[int, int, int]]]:
+        """Detection telemetry, shown only when a detector is attached."""
+        if engine is None:
+            return []
+
+        rows: list[tuple[str, str, tuple[int, int, int]]] = [
+            ("model", f"{engine.model} on {engine.backend}/{engine.device} ({engine.precision})", _ACCENT),
+        ]
+        if detection is None:
+            rows.append(("objects", "waiting for first pass", _DIM))
+            return rows
+
+        summary = ", ".join(
+            f"{count}x {label}" for label, count in sorted(detection.counts().items())
+        )
+        rows.append(("objects", f"{len(detection)}  {summary}" if summary else "0  none", _WHITE))
+
+        # Inference time governs the maximum sustainable detection rate, so it
+        # is coloured against that budget rather than an arbitrary threshold.
+        total = detection.total_ms
+        colour = _GOOD if total < 40 else (_WARN if total < 100 else _BAD)
+        rows.append(
+            (
+                "detect",
+                f"{total:5.1f} ms  (pre {detection.preprocess_ms:.1f} / "
+                f"inf {detection.inference_ms:.1f} / post {detection.postprocess_ms:.1f})",
+                colour,
+            )
+        )
+        rows.append(("det rate", f"max {1000.0 / total:.1f} fps" if total > 0 else "n/a", _DIM))
         return rows
 
     # -- drawing --------------------------------------------------------
