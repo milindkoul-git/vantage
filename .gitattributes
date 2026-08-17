@@ -1,0 +1,20 @@
+# This machine has core.autocrlf=true. Declaring line-ending policy in the repo
+# instead of relying on each clone's local setting keeps diffs clean when a
+# collaborator works on a different platform.
+* text=auto eol=lf
+
+# Windows-native scripts must keep CRLF to remain executable.
+*.bat  text eol=crlf
+*.cmd  text eol=crlf
+*.ps1  text eol=crlf
+
+# Never let line-ending conversion touch binary payloads.
+*.png  binary
+*.jpg  binary
+*.jpeg binary
+*.mp4  binary
+*.avi  binary
+*.mkv  binary
+*.onnx binary
+*.pt   binary
+*.bin  binary

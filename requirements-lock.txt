@@ -1,0 +1,14 @@
+﻿# Exact versions verified on the Phase 1 development machine
+# (Windows 11, Python 3.13.1, Intel i5-13500H, no CUDA).
+# pyproject.toml carries the supported RANGES; this file pins one known-good set.
+#   pip install -r requirements-lock.txt
+colorama==0.4.6
+iniconfig==2.3.0
+numpy==2.5.2
+opencv-python==5.0.0.93
+packaging==26.3
+pluggy==1.6.0
+Pygments==2.21.0
+pytest==9.1.1
+PyYAML==6.0.3
+

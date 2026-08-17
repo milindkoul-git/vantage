@@ -1,0 +1,39 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "vantage"
+version = "0.1.0"
+description = "Modular intelligent video analytics platform - Phase 1: video ingestion"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+
+# Phase 1 keeps the dependency surface deliberately small. Inference runtimes
+# (onnxruntime / openvino) are intentionally NOT pulled in yet so that Phase 2
+# can pick the fastest backend for the detected hardware without a forced
+# migration away from something installed prematurely.
+dependencies = [
+    "opencv-python>=4.10,<6",
+    "numpy>=1.26,<3",
+    "PyYAML>=6.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+]
+
+[project.scripts]
+vantage = "vantage.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+markers = [
+    "hardware: tests that require a physical camera (deselected by default)",
+]

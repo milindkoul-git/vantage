@@ -1,0 +1,45 @@
+# Vantage - default configuration (Phase 1: video ingestion)
+#
+# Every key here matches a field in vantage.config.schema and may be overridden
+# from the command line:  vantage run --set ingest.queue_size=16
+# Unknown keys are a hard error with a suggestion, never a silent no-op.
+
+app:
+  log_level: INFO          # DEBUG | INFO | WARNING | ERROR | CRITICAL
+  log_format: console      # console (human) | json (aggregation)
+  stats_interval_s: 5.0    # periodic telemetry summary; 0 disables
+
+source:
+  # synthetic:// is the default so the platform runs on any machine, with no
+  # camera and no sample footage. Switch to webcam:0 for the local camera.
+  uri: "synthetic://?width=1280&height=720&fps=30&objects=5"
+  id: null                 # defaults to a stable id derived from the URI
+  backend: auto            # auto | msmf | dshow | ffmpeg | gstreamer | v4l2 | any
+  width: null              # requested capture geometry; drivers may refuse
+  height: null
+  fps: null
+  fourcc: null             # e.g. MJPG - often unlocks higher USB webcam frame rates
+  loop: false              # restart file sources at EOF
+  read_retries: 3          # tolerated consecutive empty reads before failing
+  reconnect:
+    enabled: true          # live sources only
+    max_attempts: 5
+    initial_delay_s: 0.5
+    max_delay_s: 10.0
+    backoff: 2.0
+
+ingest:
+  mode: threaded           # threaded (decoupled capture) | inline (deterministic)
+  queue_size: 8            # frames buffered between capture and consumer
+  backpressure: auto       # auto -> latest for live sources, block for files
+  target_fps: null         # throttle delivery; the cheapest CPU-fit lever in Phase 2
+  stride: 1                # deliver every Nth frame (deterministic sampling)
+  realtime: false          # pace recorded sources to their own timeline
+  max_frames: null         # stop after N delivered frames
+
+display:
+  enabled: true
+  window_name: "Vantage - Ingestion"
+  hud: true                # telemetry overlay; 'h' toggles it at runtime
+  scale: 1.0               # display-only; never changes frames given to consumers
+  snapshot_dir: snapshots  # where the 's' key writes PNGs
