@@ -256,6 +256,113 @@ class DetectionConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class TrackingConfig:
+    """Phase 3 multi-object tracking.
+
+    Off by default, like detection: enabling it changes what the pipeline
+    produces, and that should be an explicit choice rather than something that
+    happens to whoever runs the default config.
+
+    The numeric defaults mirror
+    :class:`~vantage.tracking.bytetrack.TrackerParams`, which are the measured
+    output of ``vantage track tune``. They are exposed here so a deployment with
+    a different camera or a different detector can re-tune without editing code,
+    but the shipped values are the ones to prefer absent a reason.
+    """
+
+    enabled: bool = False
+
+    detection_floor: float = 0.1
+    """Confidence the detector is lowered to when tracking is enabled.
+
+    This is the one setting whose purpose is not obvious, and it is load
+    bearing. ByteTrack's second association pass exists to match *low*-scoring
+    boxes to existing tracks, which is how identity survives a partial
+    occlusion. If the detector keeps filtering at ``detection.confidence``
+    (0.35 by default) those boxes never reach the tracker and the algorithm
+    silently degrades to ordinary IoU tracking - working, but without the one
+    property it was chosen for.
+
+    So enabling tracking lowers the detector's floor to this value and lets the
+    tracker do the filtering instead. The trade is real and worth stating: the
+    detector now emits considerably more junk, and ``min_hits`` is what stops
+    that junk becoming published tracks. Set this equal to
+    ``detection.confidence`` to opt out and accept the weaker behaviour.
+    """
+
+    high_threshold: float = 0.3
+    low_threshold: float = 0.1
+    init_threshold: float = 0.5
+    """Confidence bands. Above ``high`` a box can start a track; between ``low``
+    and ``high`` it can only sustain one; below ``low`` it is ignored."""
+
+    iou_high: float = 0.2
+    iou_low: float = 0.4
+    iou_tentative: float = 0.4
+    """Minimum overlap for a match, per association pass."""
+
+    min_hits: int = 3
+    """Frames a track must be corroborated on before it is published."""
+
+    max_lost_s: float = 1.5
+    """Seconds a track survives unmatched before being dropped. In seconds
+    rather than frames because the frame interval genuinely varies here, so a
+    frame count would mean different things at different settings."""
+
+    max_step_s: float = 2.0
+    history: int = 30
+    class_aware: bool = True
+
+    measurement_noise: float = 0.05
+    acceleration_noise: float = 2.0
+    initial_velocity_noise: float = 1.0
+    size_drift_noise: float = 0.2
+    """Motion-model noise, as fractions of object height. See
+    :class:`~vantage.tracking.kalman.MotionNoise`."""
+
+    def __post_init__(self) -> None:
+        for name in ("high_threshold", "low_threshold", "init_threshold", "detection_floor"):
+            value = getattr(self, name)
+            if not 0.0 < value < 1.0:
+                raise ConfigError(
+                    f"tracking.{name} must be between 0 and 1 (exclusive), got {value}"
+                )
+        if self.low_threshold >= self.high_threshold:
+            raise ConfigError(
+                "tracking.low_threshold must be below tracking.high_threshold, or the "
+                "second association pass never sees a box "
+                f"(got {self.low_threshold} >= {self.high_threshold})"
+            )
+        if self.init_threshold < self.high_threshold:
+            raise ConfigError(
+                "tracking.init_threshold must be >= tracking.high_threshold: a box too "
+                "weak for the first association pass must not be able to create a track "
+                f"(got {self.init_threshold} < {self.high_threshold})"
+            )
+        for name in ("iou_high", "iou_low", "iou_tentative"):
+            value = getattr(self, name)
+            if not 0.0 <= value <= 1.0:
+                raise ConfigError(f"tracking.{name} must be between 0 and 1, got {value}")
+        if self.min_hits < 1:
+            raise ConfigError("tracking.min_hits must be >= 1 (1 publishes immediately)")
+        if self.max_lost_s < 0:
+            raise ConfigError("tracking.max_lost_s must be >= 0")
+        if self.max_step_s <= 0:
+            raise ConfigError("tracking.max_step_s must be positive")
+        if self.history < 1:
+            raise ConfigError("tracking.history must be >= 1")
+        for name in (
+            "measurement_noise",
+            "acceleration_noise",
+            "initial_velocity_noise",
+            "size_drift_noise",
+        ):
+            value = getattr(self, name)
+            if value <= 0:
+                raise ConfigError(f"tracking.{name} must be positive, got {value}")
+
+
+@dataclass(frozen=True, slots=True)
 class DisplayConfig:
     """The Phase 1 diagnostic viewer.
 
@@ -308,4 +415,13 @@ class VantageConfig:
     source: SourceConfig = field(default_factory=SourceConfig)
     ingest: IngestConfig = field(default_factory=IngestConfig)
     detection: DetectionConfig = field(default_factory=DetectionConfig)
+    tracking: TrackingConfig = field(default_factory=TrackingConfig)
     display: DisplayConfig = field(default_factory=DisplayConfig)
+
+    def __post_init__(self) -> None:
+        if self.tracking.enabled and not self.detection.enabled:
+            raise ConfigError(
+                "tracking.enabled requires detection.enabled: the tracker consumes "
+                "detections and has no other source of objects. Enable detection, or "
+                "pass --detect along with --track."
+            )

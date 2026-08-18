@@ -96,11 +96,61 @@ class TestBlankSourceWarning:
                 pass
         assert "blank frames" in caplog.text
 
+    def test_detects_a_near_black_source_not_only_an_exactly_black_one(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Regression: sensor noise defeated the original ``image.any()`` test.
+
+        A real camera behind a closed shutter does not return zeros, it returns
+        two or three counts of thermal and read noise. Measured on this machine:
+        a shuttered webcam streamed 200 frames with a maximum pixel value of 3
+        and no warning was ever issued, so the run looked healthy while carrying
+        no picture at all.
+        """
+        import cv2
+        import numpy as np
+
+        noisy = tmp_path / "noisy_black.mp4"
+        writer = cv2.VideoWriter(str(noisy), cv2.VideoWriter.fourcc(*"mp4v"), 10.0, (64, 48))
+        if not writer.isOpened():
+            pytest.skip("no video writer available")
+        rng = np.random.default_rng(0)
+        for _ in range(5):
+            writer.write(rng.integers(0, 4, size=(48, 64, 3), dtype=np.uint8))
+        writer.release()
+
+        with caplog.at_level("WARNING"):
+            with file_source(noisy):
+                pass
+        assert "blank frames" in caplog.text
+
     def test_stays_quiet_for_a_normal_source(
         self, sample_video: Path, caplog: pytest.LogCaptureFixture
     ) -> None:
         with caplog.at_level("WARNING"):
             with file_source(sample_video):
+                pass
+        assert "blank frames" not in caplog.text
+
+    def test_a_dark_but_real_scene_is_not_flagged(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """The threshold must not second-guess legitimately dim footage."""
+        import cv2
+        import numpy as np
+
+        dim = tmp_path / "dim.mp4"
+        writer = cv2.VideoWriter(str(dim), cv2.VideoWriter.fourcc(*"mp4v"), 10.0, (64, 48))
+        if not writer.isOpened():
+            pytest.skip("no video writer available")
+        frame = np.zeros((48, 64, 3), dtype=np.uint8)
+        frame[20:28, 20:28] = 90  # a single lit region, as any real scene has
+        for _ in range(5):
+            writer.write(frame)
+        writer.release()
+
+        with caplog.at_level("WARNING"):
+            with file_source(dim):
                 pass
         assert "blank frames" not in caplog.text
 

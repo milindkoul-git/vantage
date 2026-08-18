@@ -1,13 +1,13 @@
 """Composition root.
 
-The only module that knows about all of configuration, ingestion and display at
-once. Everything below it is independently constructible and independently
-testable; this is where the wiring lives so that no subsystem has to import a
-sibling to do its job.
+The only module that knows about all of configuration, ingestion, perception,
+tracking and display at once. Everything below it is independently
+constructible and independently testable; this is where the wiring lives so
+that no subsystem has to import a sibling to do its job.
 
-When Phase 2 arrives, the change is local: a detector is constructed here and
-invoked inside :func:`run_ingestion`'s frame loop. Nothing in
-:mod:`vantage.ingestion` changes.
+The Phase 2 and Phase 3 additions both bore that out. Adding detection, and
+then adding tracking on top of it, changed this module and nothing in
+:mod:`vantage.ingestion` - the frame contract absorbed both.
 """
 
 from __future__ import annotations
@@ -27,13 +27,15 @@ from vantage.core.logging import get_logger
 from vantage.core.metrics import LatencyTracker
 from vantage.ingestion.pipeline import IngestionPipeline, PipelineStats
 from vantage.ingestion.registry import create_source
+from vantage.tracking.factory import build_tracker
 from vantage.viz.hud import HudRenderer
-from vantage.viz.overlay import draw_detections
+from vantage.viz.overlay import draw_detections, draw_tracks
 from vantage.viz.window import KEY_NONE, FrameSink, NullSink, WindowSink
 
 if TYPE_CHECKING:  # detection is optional; importing it eagerly would make
     # onnxruntime/openvino a hard requirement for plain ingestion.
     from vantage.perception.engine import DetectionEngine
+    from vantage.tracking.base import Tracker
 
 log = get_logger(__name__)
 
@@ -56,6 +58,8 @@ class RunResult:
     snapshots: list[str] = field(default_factory=list)
     detections_run: int = 0
     detection_summary: dict[str, Any] = field(default_factory=dict)
+    tracking_steps: int = 0
+    tracking_summary: dict[str, Any] = field(default_factory=dict)
 
     def summary(self) -> str:
         base = (
@@ -71,6 +75,14 @@ class RunResult:
                 f"/{detail.get('device', '?')}, "
                 f"{detail.get('mean_total_ms', 0.0):.1f} ms mean "
                 f"({detail.get('max_fps', 0.0):.1f} fps ceiling)"
+            )
+        if self.tracking_steps:
+            detail = self.tracking_summary
+            base += (
+                f"\ntracking: {self.tracking_steps} steps, "
+                f"{detail.get('entities_total', 0)} distinct entities, "
+                f"{detail.get('active', 0)} active at end, "
+                f"{detail.get('mean_ms', 0.0):.2f} ms mean"
             )
         return base
 
@@ -128,6 +140,11 @@ def run_ingestion(
     delivered_count = 0
     detect_latency = LatencyTracker(window=240)
 
+    tracker = build_tracker(config.tracking)
+    latest_tracking = None
+    tracking_steps = 0
+    track_latency = LatencyTracker(window=240)
+
     try:
         info = pipeline.start()
         log.info("ingestion started", extra={"vantage_fields": {"source": info.describe()}})
@@ -151,6 +168,22 @@ def run_ingestion(
                             "detections",
                             extra={"vantage_fields": {"summary": latest_detection.describe()}},
                         )
+                    # Tracking steps only when detection does. Advancing it on
+                    # skipped frames would be asking the motion model to
+                    # extrapolate with no evidence, which costs accuracy and
+                    # buys nothing: the displayed boxes are already carried
+                    # forward between passes.
+                    if tracker is not None:
+                        latest_tracking = tracker.update(latest_detection, frame=frame)
+                        track_latency.observe(latest_tracking.tracking_ms)
+                        tracking_steps += 1
+                        if latest_tracking.tracks:
+                            log.debug(
+                                "tracks",
+                                extra={
+                                    "vantage_fields": {"summary": latest_tracking.describe()}
+                                },
+                            )
                 else:
                     # Carry the last pass forward so the display stays populated
                     # between inferences, but mark it so it is drawn as stale.
@@ -164,11 +197,18 @@ def run_ingestion(
                         frame.index,
                         detection=latest_detection,
                         engine=detector.info if detector else None,
+                        tracking=latest_tracking,
+                        entity_total=_entity_total(tracker),
                     )
                     if hud_enabled
                     else frame.editable_copy()
                 )
-                if latest_detection is not None:
+                # Tracks supersede raw detections on screen. Drawing both would
+                # double every box, and once identity exists it is the more
+                # informative of the two.
+                if latest_tracking is not None:
+                    image = draw_tracks(image, latest_tracking, stale=detection_stale)
+                elif latest_detection is not None:
                     image = draw_detections(image, latest_detection, stale=detection_stale)
                 key = sink.show(image)
                 if key != KEY_NONE:
@@ -216,6 +256,8 @@ def run_ingestion(
         snapshots=snapshots,
         detections_run=detections_run,
         detection_summary=_detection_summary(detector, detect_latency, detections_run),
+        tracking_steps=tracking_steps,
+        tracking_summary=_tracking_summary(tracker, track_latency, tracking_steps),
     )
     log.info("run complete", extra={"vantage_fields": {"summary": result.summary()}})
     return result
@@ -234,11 +276,12 @@ def _build_engine(config: VantageConfig) -> "DetectionEngine | None":
     from vantage.perception.engine import build_engine
 
     settings = config.detection
+    confidence = _effective_confidence(config)
     engine = build_engine(
         settings.model,
         backend=settings.backend,
         device=settings.device,
-        confidence=settings.confidence,
+        confidence=confidence,
         iou_threshold=settings.nms_iou,
         max_detections=settings.max_detections,
         keep_classes=settings.classes,
@@ -249,6 +292,40 @@ def _build_engine(config: VantageConfig) -> "DetectionEngine | None":
     if settings.warmup:
         engine.warmup(settings.warmup)
     return engine
+
+
+def _effective_confidence(config: VantageConfig) -> float:
+    """The detector threshold to actually use, given whether tracking is on.
+
+    ByteTrack's second association pass only works if it is handed the
+    low-scoring boxes an occluded object produces, so enabling tracking lowers
+    the detector's floor to ``tracking.detection_floor``. Doing this silently
+    would be indefensible - the user set ``detection.confidence`` and would see
+    a different number honoured - so it is logged whenever it takes effect.
+
+    Only ever lowers. A ``detection_floor`` above the configured confidence
+    would discard boxes the user asked for, so the stricter of the two wins.
+    """
+    configured = config.detection.confidence
+    if not config.tracking.enabled:
+        return configured
+
+    floor = min(config.tracking.detection_floor, configured)
+    if floor < configured:
+        log.info(
+            "detector threshold lowered for tracking",
+            extra={
+                "vantage_fields": {
+                    "detection_confidence": configured,
+                    "effective": floor,
+                    "reason": (
+                        "ByteTrack matches low-confidence boxes to existing tracks; "
+                        "filtering them at the detector would disable that"
+                    ),
+                }
+            },
+        )
+    return floor
 
 
 def _detection_summary(
@@ -269,6 +346,40 @@ def _detection_summary(
         "p95_ms": round(latency.percentile(95), 2),
         "max_fps": round(1000.0 / mean_ms, 2) if mean_ms > 0 else 0.0,
     }
+
+
+def _entity_total(tracker: "Tracker | None") -> int:
+    """Distinct entities published so far, or 0 for a tracker that cannot say.
+
+    The count comes from the tracker rather than from a set accumulated here,
+    so a run lasting weeks does not carry every identifier it ever issued.
+    """
+    stats = getattr(tracker, "stats", None)
+    if not callable(stats):
+        return 0
+    return int(stats().get("entities_published", 0))
+
+
+def _tracking_summary(
+    tracker: "Tracker | None",
+    latency: LatencyTracker,
+    steps: int,
+) -> dict[str, Any]:
+    if tracker is None or not steps:
+        return {}
+    summary: dict[str, Any] = {
+        "steps": steps,
+        "entities_total": _entity_total(tracker),
+        "mean_ms": round(latency.mean, 3),
+        "p95_ms": round(latency.percentile(95), 3),
+    }
+    # ByteTracker exposes health counters; the Protocol does not require them,
+    # so a different tracker implementation simply contributes fewer fields
+    # rather than breaking the run summary.
+    stats = getattr(tracker, "stats", None)
+    if callable(stats):
+        summary.update(stats())
+    return summary
 
 
 def _build_sink(config: VantageConfig) -> FrameSink:

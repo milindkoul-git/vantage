@@ -79,6 +79,38 @@ replaceable:
 
 ---
 
+## 2c. What Phase 3 delivers
+
+Multi-object tracking: the point at which per-frame detections become persistent objects
+with identity, which is the prerequisite for every later phase.
+
+- **ByteTrack**, two-pass association on geometry alone. No appearance model, so it adds
+  **well under 1 ms per frame** on top of detection (0.7 ms with 8 simultaneous objects)
+  and, by construction, computes nothing biometric.
+- **Anonymous stable identity** (`person_17`) assigned by the tracker and fixed for a
+  track's lifetime, with the class settled by majority vote so a first-frame flicker
+  cannot permanently mislabel an entity.
+- **A real motion model** — a Kalman filter over `(cx, cy, w, h)` driven by **actual
+  elapsed time** rather than a frame count, so `detection.interval` and dropped frames do
+  not silently degrade it. Position is extrapolated; **size deliberately is not**, which
+  fixes a failure mode the reference design has (see below).
+- **An optimal assignment solver** (Jonker–Volgenant, ~100 lines, no SciPy) verified
+  against brute-force enumeration, because greedy matching fails exactly when two objects
+  pass each other — the case tracking exists for.
+- **A ground-truth evaluation harness**: five seeded scenarios, a modelled detector, and
+  full CLEAR MOT + IDF1 metrics, so tracking accuracy is a reproducible number rather than
+  an impression. One command: `vantage track eval`.
+- **Measured parameters, not inherited ones.** `vantage track tune` searches the parameter
+  space and reports held-out results; the shipped defaults are its output.
+- **Track overlay with motion trails and per-track colouring**, plus tracking telemetry on
+  the HUD, with coasting (predicted) boxes drawn dashed so a guess is never shown as an
+  observation.
+
+**388 tests** (+104), 380 of which need no camera, no model file and no inference
+runtime; the remaining 8 exercise real weights and deselect cleanly without them.
+
+---
+
 ## 3. Quick start
 
 Requires Python 3.11+ (developed on 3.13.1).
@@ -114,6 +146,27 @@ vantage run --source webcam:0 --detect
 
 Press `q` or `Esc` to quit, `s` to save a PNG snapshot, `h` to toggle the HUD.
 
+### Tracking (Phase 3)
+
+```bash
+vantage run --source webcam:0 --track --device gpu   # --track implies --detect
+```
+
+Each object gets a stable anonymous label (`person_17`) and a motion trail. A **dashed**
+box means the position is predicted rather than observed — the object is currently hidden.
+
+Verify the tracker rather than taking its word for it:
+
+```bash
+vantage track scenarios     # the benchmark scenarios and what each one stresses
+vantage track eval          # score the shipped parameters, per scenario
+vantage track eval --validate --scenarios occlusion,crowd
+vantage track tune          # search for better parameters; reports held-out results
+```
+
+`track eval` needs no camera, no model and no inference runtime — the detector is modelled,
+so it measures the tracker rather than the pair of them.
+
 ### More things to try
 
 ```bash
@@ -138,6 +191,12 @@ vantage run --source webcam:0 --detect --device gpu --classes person --detect-in
 
 # Compare backends on your own footage
 vantage bench --image my_photo.jpg --frames 100
+
+# Track only people, and publish a track faster (1 = as soon as it is seen)
+vantage run --source webcam:0 --track --classes person --track-min-hits 2
+
+# Hold identity through a longer occlusion (seconds, not frames)
+vantage run --source webcam:0 --track --track-max-lost 3.0
 ```
 
 Run the tests:
@@ -213,6 +272,17 @@ vantage/
 │  ├─ store.py       download, verify, cache
 │  ├─ nms.py         class-aware non-maximum suppression
 │  └─ benchmark.py   backend measurement
+│
+├─ tracking/      Phase 3: turning detections into persistent objects
+│  ├─ contracts.py   Track, TrackingResult, TrackState
+│  ├─ bytetrack.py   the tracker: two-pass association and lifecycle
+│  ├─ kalman.py      constant-velocity filter with a real, variable timestep
+│  ├─ assignment.py  optimal assignment (Jonker-Volgenant) + IoU matrices
+│  ├─ base.py        the Tracker Protocol - the replaceability seam
+│  ├─ scenarios.py   seeded ground truth + a modelled detector
+│  ├─ evaluation.py  CLEAR MOT and IDF1
+│  ├─ tuning.py      parameter search with held-out validation
+│  └─ factory.py     config -> tracker (keeps config out of the algorithm)
 │
 ├─ viz/           diagnostic display only; contains no analysis logic
 ├─ app.py         composition root - the only module that knows about all layers
@@ -308,6 +378,59 @@ rather than discovered in a legal review.
 **BGR 0-255 input** — exactly what `Frame` already carries, so there is no colour
 conversion on the hot path. Every catalog entry records its licence next to its URL.
 
+### Tracking measures time in seconds, and its own elapsed time at that
+
+Nearly every published tracker advances its motion model by one unit per call and calls
+that a frame. That assumption is false here twice over: `detection.interval` runs the
+detector on every Nth frame by configuration, and `latest` backpressure drops frames under
+load. A tracker that assumed uniform spacing would under-predict motion after a gap by
+exactly the factor it was wrong about — and being wrong about where an object went *is* an
+identity switch.
+
+So the Kalman filter takes `dt` as an argument, the process noise is the exact
+discretisation of a constant-velocity model (`dt³/3`, `dt²/2`, `dt`) rather than a table
+tuned at one frame rate, and track expiry is configured in **seconds** rather than frames.
+`Frame` already carried both a monotonic and a media timestamp, so the information was
+there; media time wins where it exists, because a 60-second clip analysed in 6 seconds
+must still model objects as moving at their real speed.
+
+Verified: a filter fed every third observation with three times the timestep converges on
+the same velocity as one fed every frame.
+
+### Size is filtered but never extrapolated
+
+The reference SORT/ByteTrack filters give box size a velocity, and copying that produced a
+real failure found during runtime validation. As an object slides behind an occluder the
+detector still sees it, but only the visible part, so the reported box shrinks fast. The
+filter reads that as genuine sustained shrinking. The object then vanishes completely, the
+filter extrapolates, and the predicted box collapses — **measured at 1x1 pixels after 40
+frames on real footage.**
+
+That is not just an invisible box on screen. A degenerate box has an IoU of essentially
+zero against anything, so when the object reappeared it could never be re-associated and a
+new identity was issued. The bug was silently *causing* the identity losses it was hiding.
+
+The fix is to drop size velocity entirely: the state is `(cx, cy, w, h, vx, vy)`, position
+is advanced by its velocity, and size carries forward unchanged while being corrected by
+measurements and allowed to drift as a random walk. The physical argument was always on
+this side — an object's apparent size changes slowly, non-monotonically, and only because
+its distance changed, whereas its position changes consistently and predictably.
+Extrapolating size across a gap of no evidence asserts something nobody knows.
+
+Worth 1 point of pooled MOTA, 5 identity switches and 9 points of occlusion IDF1 on the
+benchmark — and it was invisible to every metric until someone looked at a rendered frame.
+
+### The tracker cannot see pixels, and that is a guarantee
+
+`Tracker.update()` takes detections and time. It has no access to the image. This is a
+deliberate structural choice with two payoffs. It makes tracking testable and *tunable*
+with no camera, no model and no runtime — which is what made the evaluation harness
+possible at all. And it means appearance-based re-identification cannot be added by
+accident: extracting visual features would require changing the interface, which is a
+review-visible act rather than a quiet import. For a platform with this project's privacy
+constraints, a tracker that structurally cannot compute an appearance signature is a
+stronger guarantee than one that merely does not today.
+
 ### Model weights are treated as untrusted remote content
 
 Pinned SHA-256, verified on every load rather than trusted because the file exists;
@@ -357,6 +480,24 @@ ingest:
   realtime: false          # pace recorded sources to their own timeline
   max_frames: null         # stop after N delivered frames
 
+tracking:
+  enabled: false           # requires detection.enabled
+  detection_floor: 0.1     # detector threshold while tracking - see the note below
+  high_threshold: 0.5      # above this a box may start a track
+  low_threshold: 0.1       # between low and high a box may only sustain a track
+  init_threshold: 0.5      # confidence needed to create a track (>= high_threshold)
+  iou_high: 0.2            # minimum overlap, first association pass
+  iou_low: 0.4             # minimum overlap, low-confidence second pass
+  iou_tentative: 0.4       # minimum overlap for an unconfirmed track
+  min_hits: 3              # frames of corroboration before a track is published
+  max_lost_s: 1.5          # seconds a track survives unmatched - SECONDS, not frames
+  max_step_s: 2.0          # elapsed times beyond this are clamped, not extrapolated
+  history: 30              # centre positions kept per track, for motion trails
+  class_aware: true        # never associate a detection across a class boundary
+  measurement_noise: 0.05      # detector box error, as a fraction of object height
+  acceleration_noise: 2.0      # unmodelled acceleration, object heights per second^2
+  initial_velocity_noise: 1.0  # velocity prior for a new track
+
 display:
   enabled: true
   window_name: "Vantage - Ingestion"
@@ -364,6 +505,20 @@ display:
   scale: 1.0               # display only; never changes frames given to consumers
   snapshot_dir: snapshots
 ```
+
+**`tracking.detection_floor` is the one setting whose purpose is not obvious**, and it is
+load bearing. ByteTrack keeps identity through occlusion by matching the *low*-confidence
+boxes an occluded object produces. If the detector keeps filtering at
+`detection.confidence` (0.35), those boxes never reach the tracker and the algorithm
+silently degrades to ordinary IoU tracking — still working, but without the one property it
+was chosen for. So enabling tracking lowers the detector's floor to this value and lets the
+tracker do the filtering instead. The run logs the change when it happens, because
+honouring a different number than the one you configured should never be silent. The trade
+is real: the detector now emits considerably more junk, and `min_hits` is what stops that
+junk becoming published tracks. Set it equal to `detection.confidence` to opt out.
+
+Every numeric value in the `tracking:` block is the output of `vantage track tune`, not a
+copy of the reference paper's. Re-run it if you change detector or camera.
 
 ### Source URIs
 
@@ -402,7 +557,7 @@ this is reported in the `PREC` column rather than hidden. And ONNX Runtime beati
 
 | Check | Result |
 |---|---|
-| Test suite | 276 passed in ~1.8 s with no camera, model or runtime; +8 model-backed |
+| Test suite | 380 passed in ~3.0 s with no camera, model or runtime; +8 model-backed |
 | Synthetic source, headless | ~2 400 fps at 640×480 |
 | Webcam `webcam:0`, headless | 30.3 fps mean over 60 frames, 0 dropped, queue peak 1/8, acquisition p50 6.1 ms, delivery latency p95 0.3 ms |
 | File playback (960×540, 100 frames) | 100/100 delivered, 0 dropped, `block` policy auto-selected, ~846 fps decode |
@@ -417,12 +572,83 @@ End-to-end Phase 2: file source → pipeline → detection → overlay → HUD, 
 `interval=2`, produced 15 detection passes at **8.3 ms mean on the iGPU** (120 fps ceiling),
 correctly labelling dog / bicycle / car and drawing carried-forward boxes dashed.
 
+### Tracking accuracy (`vantage track eval`)
+
+Measured against the seeded ground-truth scenarios, each scored across five modelled
+detector profiles (clean, typical, degraded, cluttered, harsh). Pooled from raw counts, so
+a long scenario is not outvoted by a short one:
+
+| | Shipped defaults | Reference-paper values |
+|---|---|---|
+| MOTA | **87.1%** | 84.3% |
+| IDF1 | **91.1%** | 84.8% |
+| Identity switches | **20** | 30 |
+| Mostly-tracked objects | **74 / 85** | 66 / 85 |
+
+Per scenario, and on the **held-out** detector profiles — different seeds *and* different
+error magnitudes, never used by the search — the tuned values win on every scenario:
+
+| IDF1 | sparse | crossing | occlusion | crowd | erratic | pooled | ID switches |
+|---|---|---|---|---|---|---|---|
+| **Shipped** | **97%** | **83%** | **84%** | **80%** | **63%** | **78.6%** | **32** |
+| Reference | 90% | 79% | 79% | 76% | 54% | 73.1% | 38 |
+
+Both columns run on the same corrected motion model, so this is a comparison of
+*parameters*, not of implementations. The `erratic` scenario is the weakest for both — under
+the harshest held-out profile (4.5 spurious boxes per frame, 9% localisation error, a
+detector unsure of everything) sharp non-linear motion is genuinely hard, and it is left
+visible rather than dropped from the table.
+
+Cost: **0.7 ms per step with 8 simultaneous objects**, against a 33 ms frame budget.
+
+### Occlusion tolerance, measured
+
+The capability the phase exists for, with exact ground truth (object crossing at 200 px/s):
+
+| Occlusion type | Identity survives |
+|---|---|
+| **Total** (detector returns nothing at all) | up to **1.5 s** — kept at 1.50 s, lost at 1.67 s, exactly `max_lost_s` |
+| **Partial** (confidence falls to 0.25) | **indefinitely** — verified to 8 s |
+
+The second row is ByteTrack's whole point. A partially visible object still produces a
+low-scoring box, the second association pass consumes it, and identity is never at risk.
+Only total disappearance is time-limited, and that limit is a configured number rather than
+an emergent one.
+
+### Runtime validation
+
+| Check | Result |
+|---|---|
+| Full pipeline with tracking, real model | file → detection → tracking → overlay → HUD, 120 frames, **8.1 ms detect + 0.15 ms track**, 0 dropped |
+| Live webcam, detection | 200 frames at **29.97 fps mean, 0 dropped**, 9.3 ms/frame on the iGPU |
+| Tracking cost | 0.15 ms/step on real footage; 0.7 ms/step with 8 simultaneous objects |
+| Graceful shutdown with tracking active | SIGINT → exited in **0.08 s**, code 0, tracker state reported in the run summary |
+| Startup / shutdown | detector and tracker built before the camera opens; both closed on every exit path |
+| Overlay | verified by rendering: coasting boxes dashed, entity ids and motion trails drawn, HUD reports `1 shown (0 seen, 1 predicted)` |
+
 ---
 
 ## 8. Known limitations
 
-**Scope.** No tracking, pose, activity recognition, events, alerts, storage, dashboard,
-multi-camera orchestration, or identity. By design.
+**Scope.** No pose, activity recognition, events, alerts, storage, dashboard, multi-camera
+orchestration, or identity. By design.
+
+**Tracking is motion-only, and long total occlusions break identity.** With no appearance
+model there is nothing to re-identify an object by, so recovery depends entirely on the
+predicted box still overlapping the object when it reappears. Measured: identity survives
+**1.5 s** of total disappearance and then a new entity is issued. Partial occlusion is
+unaffected and survives indefinitely, which is the case that actually dominates in
+practice. Raising `tracking.max_lost_s` extends the window but also raises the chance of
+reviving a track onto the wrong object, and the extrapolated position degrades anyway —
+one measured failure came from a detector box shrinking as an object entered an occluder,
+which inflated the velocity estimate before the object vanished. Fixing that class of
+failure properly needs appearance features, which this phase deliberately does not have.
+
+**Velocity damping while coasting was tried and rejected.** The hypothesis was that a
+prediction should decay toward stationary as evidence ages. It measured neutral-to-negative
+on the benchmark and did not recover the real-footage case it was written for, so it was
+removed rather than shipped as a knob that does nothing. The actual cause of that failure
+turned out to be size extrapolation, described next.
 
 **OpenVINO compiled-model caching is deliberately disabled.** Enabling `CACHE_DIR` looks
 like free startup time and costs a crash: on this Iris Xe / OpenVINO 2026.3 combination,
@@ -463,9 +689,14 @@ so the process still exits; the device handle is released either way.
 
 **Blank frames are a warning, not an error.** A closed privacy shutter is indistinguishable
 from a healthy camera by every property OpenCV reports — correct resolution, correct frame
-rate, successful reads, all-zero pixels. Vantage logs a warning when the probe frame is
-entirely blank, because a legitimately dark scene looks identical and refusing to start
-would be worse. *This was hit for real during Phase 1 validation on this machine.*
+rate, successful reads, near-black pixels. Vantage logs a warning when the probe frame
+carries no picture, because a legitimately dark scene looks identical and refusing to start
+would be worse. *This was hit for real during Phase 1 validation on this machine, and the
+check was found to be wrong during Phase 3 validation:* it tested for **exactly** zero
+pixels, but a real sensor behind a closed shutter returns two or three counts of thermal
+noise. A shuttered camera streamed 200 frames at a maximum pixel value of 3, the detector
+correctly found nothing, and no warning explained why. The threshold is now
+`BLANK_LEVEL = 8`.
 
 **Driver negotiation is advisory.** Requested width/height/FPS/FOURCC are requests. What
 was actually granted is reported in `SourceInfo` and a mismatch is logged. Always trust
@@ -493,14 +724,17 @@ reads ONNX directly and reaches the iGPU, so the two runtimes now sit side by si
 independent backends instead. INT8 quantisation was also deferred: fp16 on the iGPU already
 clears 73 fps on a 30 fps pipeline, so the accuracy cost buys nothing yet.
 
-**Phase 3 — Multi-object tracking (next).** ByteTrack first: no appearance model, no GPU
-cost, and strong on the accuracy/compute trade-off — which matters because detection now
-occupies the iGPU. It consumes `DetectionResult` and produces the stable anonymous
-`entity_id` (`person_17`) the rest of the platform builds on. The synthetic source already
-provides exact ground truth via `SyntheticSource.object_states(index)`, so identity switches
-can be *measured* rather than eyeballed. The main open design question is where tracking
-runs given that `detection.interval` means detections arrive irregularly — trackers that
-assume a fixed timestep will need the real elapsed time, which `Frame` already carries.
+**Phase 3 — Multi-object tracking. Done.** ByteTrack, as planned. The open design question
+flagged here in advance — irregular timesteps from `detection.interval` — turned out to be
+the single most consequential detail: it drove a variable-`dt` Kalman filter, a derived
+rather than tabulated process noise, and track expiry measured in seconds. Two things were
+not anticipated. First, enabling tracking has to *lower the detector's confidence floor*
+(0.35 → 0.1), because ByteTrack's second pass is worthless without the low-scoring boxes an
+occluded object produces; that in turn makes false-positive rejection (`min_hits`) load
+bearing rather than incidental. Second, building the evaluation harness was worth more than
+the tracker: it caught an off-by-one in `min_hits`, an off-frame coasting bug worth 5 points
+of MOTA, and two separate cases of the parameter search overfitting a benchmark that was too
+easy. INT8 quantisation is still deferred and still not needed.
 
 **Phase 4 onward — Pose and object state → temporal activity → spatial/interaction
 analysis → event engine → observation storage → dashboard → identity (optional) →

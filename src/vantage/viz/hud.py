@@ -26,6 +26,7 @@ from vantage.ingestion.pipeline import PipelineStats
 if TYPE_CHECKING:  # imported for typing only - viz must not require a detector
     from vantage.perception.contracts import DetectionResult
     from vantage.perception.engine import EngineInfo
+    from vantage.tracking.contracts import TrackingResult
 
 _FONT = cv2.FONT_HERSHEY_SIMPLEX
 _WHITE = (245, 245, 245)
@@ -51,6 +52,8 @@ class HudRenderer:
         extra: list[str] | None = None,
         detection: "DetectionResult | None" = None,
         engine: "EngineInfo | None" = None,
+        tracking: "TrackingResult | None" = None,
+        entity_total: int = 0,
     ) -> np.ndarray:
         """Return an annotated copy of ``image``.
 
@@ -63,6 +66,8 @@ class HudRenderer:
         lines = self._compose(stats, frame_index)
         if engine is not None:
             lines.extend(self._compose_detection(detection, engine))
+        if tracking is not None:
+            lines.extend(self._compose_tracking(tracking, entity_total))
         if extra:
             lines.extend(("", value, _DIM) for value in extra)
 
@@ -154,6 +159,42 @@ class HudRenderer:
             )
         )
         rows.append(("det rate", f"max {1000.0 / total:.1f} fps" if total > 0 else "n/a", _DIM))
+        return rows
+
+    def _compose_tracking(
+        self, tracking: "TrackingResult", entity_total: int
+    ) -> list[tuple[str, str, tuple[int, int, int]]]:
+        """Tracking telemetry, shown only when a tracker is attached."""
+        coasting = sum(1 for track in tracking.tracks if track.is_coasting)
+        observed = len(tracking) - coasting
+
+        rows: list[tuple[str, str, tuple[int, int, int]]] = [
+            (
+                "tracks",
+                f"{len(tracking)} shown ({observed} seen, {coasting} predicted)",
+                _WHITE if not coasting else _WARN,
+            ),
+        ]
+
+        # Distinct entities over the whole run is the number an operator cares
+        # about; the instantaneous count is already above.
+        if entity_total:
+            rows.append(("entities", f"{entity_total} total this run", _ACCENT))
+
+        # A large gap between maintained and published tracks means the detector
+        # is generating objects that never corroborate - a health signal that is
+        # invisible from the published list alone.
+        pending = max(0, tracking.active_count - len(tracking))
+        if pending:
+            rows.append(("pending", f"{pending} unconfirmed", _DIM))
+
+        rows.append(
+            (
+                "track",
+                f"{tracking.tracking_ms:5.2f} ms  (step {tracking.elapsed_s * 1000:.0f} ms)",
+                _GOOD if tracking.tracking_ms < 5 else _WARN,
+            )
+        )
         return rows
 
     # -- drawing --------------------------------------------------------

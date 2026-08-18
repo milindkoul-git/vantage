@@ -10,8 +10,9 @@ This exists for three concrete reasons, all of which pay for its ~150 lines:
    or duplicated frame on screen is immediately obvious rather than subtly wrong.
 3. **It is free ground truth for later phases.** Object positions come from a
    closed-form function of the frame index, so :meth:`SyntheticSource.object_states`
-   returns exact boxes for any frame. When Phase 3 needs to measure whether a
-   tracker maintains identity through occlusion, the answer is already known.
+   returns exact boxes for any frame. Phase 3 built on exactly this: the
+   tracker's accuracy is measured against known ground truth rather than
+   eyeballed (see :mod:`vantage.tracking.scenarios`).
 
 Determinism is total: same seed and index, same pixels, on any machine.
 """

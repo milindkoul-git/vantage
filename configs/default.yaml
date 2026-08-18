@@ -1,4 +1,4 @@
-# Vantage - default configuration (Phase 1: video ingestion)
+# Vantage - default configuration (ingestion, detection, tracking)
 #
 # Every key here matches a field in vantage.config.schema and may be overridden
 # from the command line:  vantage run --set ingest.queue_size=16
@@ -53,6 +53,33 @@ detection:
   threads: 0              # 0 = runtime decides
   model_dir: models       # weights are downloaded on demand, never committed
   allow_download: true    # false for air-gapped deployments
+
+tracking:
+  # Off by default, like detection. Requires detection.enabled.
+  # Values are the measured output of 'vantage track tune' (see README S6).
+  enabled: false
+  detection_floor: 0.1   # detector threshold used while tracking; see below
+  high_threshold: 0.3    # above this a box joins the first association pass
+  low_threshold: 0.1     # between low and high a box may only sustain a track
+  init_threshold: 0.5    # confidence needed to create a track (>= high_threshold)
+  iou_high: 0.2          # minimum overlap, first association pass
+  iou_low: 0.4           # minimum overlap, low-confidence second pass
+  iou_tentative: 0.4     # minimum overlap for an unconfirmed track
+  min_hits: 3            # frames of corroboration before a track is published
+  max_lost_s: 1.5        # seconds a track survives unmatched (seconds, not frames)
+  max_step_s: 2.0        # elapsed times beyond this are clamped, not extrapolated
+  history: 30            # centre positions kept per track, for motion trails
+  class_aware: true      # never associate a detection across class boundaries
+  measurement_noise: 0.05      # detector box error, as a fraction of object height
+  acceleration_noise: 2.0      # unmodelled acceleration, object heights per second^2
+  initial_velocity_noise: 1.0  # velocity prior for a new track
+  size_drift_noise: 0.2        # how fast box size may change (size has no velocity)
+  #
+  # detection_floor is the non-obvious one. ByteTrack keeps identity through
+  # occlusion by matching the LOW-confidence boxes an occluded object produces,
+  # so enabling tracking lowers the detector's threshold from detection.confidence
+  # to this value - otherwise those boxes never arrive and the algorithm quietly
+  # degrades to plain IoU tracking. The run logs the change when it happens.
 
 display:
   enabled: true

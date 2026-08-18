@@ -34,7 +34,7 @@ EXIT_ERROR = 1
 EXIT_INTERRUPTED = 130
 
 
-COMMANDS = ("run", "probe", "info", "make-sample", "models", "bench")
+_DEFAULT_COMMAND = "run"
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -55,7 +55,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     parser = argparse.ArgumentParser(
         prog="vantage",
-        description="Vantage - intelligent video analytics platform (Phase 1: ingestion)",
+        description="Vantage - intelligent video analytics platform "
+        "(ingestion, detection, tracking)",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
             "Examples:\n"
@@ -112,6 +113,23 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="comma-separated labels to keep, e.g. --classes person,car",
     )
+    run.add_argument(
+        "--track",
+        action="store_true",
+        help="enable multi-object tracking (implies --detect)",
+    )
+    run.add_argument(
+        "--track-min-hits",
+        type=int,
+        default=None,
+        help="frames a track must be corroborated on before it is published",
+    )
+    run.add_argument(
+        "--track-max-lost",
+        type=float,
+        default=None,
+        help="seconds a track survives unmatched before it is dropped",
+    )
     run.add_argument("--no-display", action="store_true", help="run headless")
     run.add_argument("--no-hud", action="store_true", help="show video without the telemetry panel")
     run.add_argument("--scale", type=float, default=None, help="window scale factor")
@@ -138,6 +156,34 @@ def build_parser() -> argparse.ArgumentParser:
     models.add_argument("name", nargs="?", default=None, help="catalog key, e.g. yolox-nano")
     models.add_argument("--model-dir", default=None, help="where models are cached")
     models.add_argument("--json", action="store_true")
+
+    track = sub.add_parser(
+        "track",
+        parents=[common],
+        help="evaluate and tune the tracker against ground-truth scenarios",
+    )
+    track.add_argument(
+        "action",
+        choices=["eval", "tune", "scenarios"],
+        nargs="?",
+        default="eval",
+        help="eval: score the current parameters; tune: search for better ones; "
+        "scenarios: list the benchmark scenarios",
+    )
+    track.add_argument(
+        "--scenarios",
+        default=None,
+        help="comma-separated scenario names (default: all)",
+    )
+    track.add_argument(
+        "--rounds", type=int, default=3, help="maximum tuning sweeps over the parameter space"
+    )
+    track.add_argument(
+        "--validate",
+        action="store_true",
+        help="also score against the held-out detector profiles",
+    )
+    track.add_argument("--json", action="store_true")
 
     bench = sub.add_parser(
         "bench", parents=[common], help="benchmark detection backends on this machine"
@@ -168,12 +214,20 @@ def build_parser() -> argparse.ArgumentParser:
     sample.add_argument("--seed", type=int, default=7)
     sample.add_argument("--objects", type=int, default=4)
 
+    # Recorded on the parser so _with_default_command can never fall out of
+    # sync with the registered subcommands.
+    parser.set_defaults(_commands=tuple(sub.choices))
     return parser
+
+
+def _subcommands(parser: argparse.ArgumentParser) -> tuple[str, ...]:
+    """Every registered subcommand name, straight from the parser."""
+    return tuple(parser.get_default("_commands") or ())
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
-    args = parser.parse_args(_with_default_command(argv))
+    args = parser.parse_args(_with_default_command(argv, _subcommands(parser)))
     command = args.command or "run"
 
     configure_logging(level=args.log_level or "INFO", fmt=args.log_format or "console")
@@ -191,6 +245,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             return _cmd_models(args)
         if command == "bench":
             return _cmd_bench(args)
+        if command == "track":
+            return _cmd_track(args)
         parser.error(f"unknown command {command!r}")
         return EXIT_ERROR
     except VantageError as exc:
@@ -202,19 +258,25 @@ def main(argv: Sequence[str] | None = None) -> int:
         return EXIT_INTERRUPTED
 
 
-def _with_default_command(argv: Sequence[str] | None) -> list[str]:
+def _with_default_command(argv: Sequence[str] | None, commands: tuple[str, ...]) -> list[str]:
     """Treat ``run`` as the default subcommand.
 
     ``vantage --source webcam:0`` is what people type; requiring ``run`` for the
     overwhelmingly common case is friction with no benefit.
+
+    ``commands`` is read off the parser rather than kept in a constant here.
+    The hand-maintained version of this list silently omitted ``track`` when
+    that command was added, which turned ``vantage track eval`` into
+    ``vantage run track eval`` and produced an argument error naming the wrong
+    thing. Deriving it removes the whole class of mistake.
     """
     tokens = list(sys.argv[1:] if argv is None else argv)
     if not tokens:
-        return ["run"]
+        return [_DEFAULT_COMMAND]
     first = tokens[0]
-    if first in COMMANDS or first in ("-h", "--help", "--version"):
+    if first in commands or first in ("-h", "--help", "--version"):
         return tokens
-    return ["run", *tokens]
+    return [_DEFAULT_COMMAND, *tokens]
 
 
 # -- commands -----------------------------------------------------------
@@ -353,6 +415,119 @@ def _download_progress(done: int, total: int) -> None:
     print(f"\rdownloading... {percent:5.1f}% ({done / 1e6:.1f}/{total / 1e6:.1f} MB)", end="")
 
 
+def _cmd_track(args: argparse.Namespace) -> int:
+    """Evaluate or tune the tracker against the ground-truth scenarios.
+
+    Deliberately a first-class command rather than a script in a corner. The
+    claim "tracking works" is only meaningful if anyone can reproduce the number
+    behind it, and that has to be one command away.
+    """
+    import json
+
+    from vantage.tracking.bytetrack import TrackerParams
+    from vantage.tracking.evaluation import format_table
+    from vantage.tracking.scenarios import SCENARIOS, build_suite
+    from vantage.tracking.tuning import (
+        as_config_lines,
+        assess,
+        default_params_source,
+        search,
+        validate,
+    )
+
+    if args.action == "scenarios":
+        rows = []
+        for name in sorted(SCENARIOS):
+            scenario = SCENARIOS[name]()
+            rows.append(
+                {
+                    "name": name,
+                    "frames": len(scenario),
+                    "objects": scenario.object_count,
+                    "instances": scenario.instance_count,
+                    "description": scenario.description,
+                }
+            )
+        if args.json:
+            print(json.dumps(rows, indent=2))
+        else:
+            print(f"{'scenario':<12} {'frames':>7} {'objects':>8}  description")
+            print("-" * 76)
+            for row in rows:
+                print(
+                    f"{row['name']:<12} {row['frames']:>7} {row['objects']:>8}  "
+                    f"{row['description']}"
+                )
+        return EXIT_OK
+
+    names = (
+        [part.strip() for part in args.scenarios.split(",") if part.strip()]
+        if args.scenarios
+        else None
+    )
+    try:
+        suite = build_suite(names)
+    except ValueError as exc:
+        raise VantageError(str(exc)) from exc
+
+    if args.action == "tune":
+        best, evaluations = search(suite, rounds=args.rounds)
+        if args.json:
+            print(
+                json.dumps(
+                    {
+                        "evaluations": evaluations,
+                        "objective": best.objective,
+                        "summary": best.summary,
+                        "params": default_params_source(best.params),
+                    },
+                    indent=2,
+                )
+            )
+            return EXIT_OK
+        print(format_table(list(best.metrics)))
+        print(f"\n{evaluations} parameter sets evaluated")
+        print(f"shipped defaults : {default_params_source(TrackerParams())}")
+        print(f"search result    : {default_params_source(best.params)}")
+        print("\nAs configuration:")
+        for line in as_config_lines(best.params):
+            print(f"  {line}")
+        # Reporting the held-out result unprompted, because a tuning number
+        # without one is the easiest kind of self-deception to publish.
+        comparison = validate(best.params, scenarios=suite)
+        print("\nHeld-out profiles (not used by the search):")
+        for label, summary in comparison.items():
+            print(
+                f"  {label:<9} objective {summary['objective']:.4f}  "
+                f"IDF1 {summary['idf1']:.1%}  MOTA {summary['mota']:.1%}  "
+                f"IDs {int(summary['id_switches'])}"
+            )
+        return EXIT_OK
+
+    candidate = assess(TrackerParams(), suite)
+    if args.json:
+        payload = {
+            "objective": candidate.objective,
+            "summary": candidate.summary,
+            "scenarios": [metric.to_dict() for metric in candidate.metrics],
+        }
+        if args.validate:
+            payload["held_out"] = validate(TrackerParams(), scenarios=suite)
+        print(json.dumps(payload, indent=2, default=float))
+        return EXIT_OK
+
+    print(format_table(list(candidate.metrics)))
+    if args.validate:
+        print("\nHeld-out profiles:")
+        for label, summary in validate(TrackerParams(), scenarios=suite).items():
+            print(
+                f"  {label:<9} objective {summary['objective']:.4f}  "
+                f"IDF1 {summary['idf1']:.1%}  MOTA {summary['mota']:.1%}  "
+                f"IDs {int(summary['id_switches'])}"
+            )
+    return EXIT_OK
+
+
 def _cmd_bench(args: argparse.Namespace) -> int:
     """Measure detection latency per backend so the choice rests on numbers."""
     import numpy as np
@@ -473,6 +648,8 @@ def _flag_overrides(args: argparse.Namespace) -> list[str]:
         ("detection.device", args.device),
         ("detection.confidence", args.conf),
         ("detection.interval", args.detect_interval),
+        ("tracking.min_hits", args.track_min_hits),
+        ("tracking.max_lost_s", args.track_max_lost),
         # The logging flags must go through the config too, or the reload inside
         # _cmd_run would quietly discard them.
         ("app.log_level", args.log_level),
@@ -489,8 +666,13 @@ def _flag_overrides(args: argparse.Namespace) -> list[str]:
         overrides.append("display.enabled=false")
     if args.no_hud:
         overrides.append("display.hud=false")
-    if args.detect:
+    if args.detect or args.track:
         overrides.append("detection.enabled=true")
+    if args.track:
+        # --track implies --detect rather than erroring, because a tracker with
+        # no detector cannot do anything at all; requiring both flags would be
+        # pedantry with no failure mode to protect against.
+        overrides.append("tracking.enabled=true")
     if args.classes:
         # Rendered as a YAML flow sequence so the loader parses it as a real
         # list; a bare string would be iterated character by character.

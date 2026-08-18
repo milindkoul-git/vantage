@@ -1,22 +1,28 @@
 """Detection overlay.
 
 Pure rendering over a copy of the frame, with no dependency on how detections
-were produced - the same code draws boxes from any future detector, and in
-Phase 3 it will draw track ids alongside them.
+or tracks were produced - the same code draws boxes from any detector and any
+tracker behind the shared contracts.
 
-Colour is derived deterministically from the class id, so a "person" is the
-same colour in every frame and across runs. A palette that shuffled per frame
-would make a video unreadable, and one keyed on detection order would flicker.
+Colour is always derived deterministically from a stable id, never from
+position in a list. A palette keyed on detection order would flicker every
+frame; one that shuffled per run would make two recordings incomparable. Which
+id is used differs by overlay and is explained at each function.
 """
 
 from __future__ import annotations
 
 import colorsys
+from typing import TYPE_CHECKING
 
 import cv2
 import numpy as np
 
 from vantage.perception.contracts import Detection, DetectionResult
+
+if TYPE_CHECKING:  # tracking is optional at render time; the overlay must not
+    # make it an import-time requirement for plain detection display.
+    from vantage.tracking.contracts import Track, TrackingResult
 
 _FONT = cv2.FONT_HERSHEY_SIMPLEX
 
@@ -99,6 +105,107 @@ def _draw_one(
         1,
         cv2.LINE_AA,
     )
+
+
+def draw_tracks(
+    image: np.ndarray,
+    result: "TrackingResult",
+    *,
+    show_confidence: bool = False,
+    thickness: int = 2,
+    stale: bool = False,
+    trail: bool = True,
+) -> np.ndarray:
+    """Draw tracked objects with their anonymous entity ids and motion trails.
+
+    Same ownership contract as :func:`draw_detections`: a writeable ``image`` is
+    drawn on in place and returned.
+
+    Colour is keyed on ``track_id`` rather than on class, which is the opposite
+    of the detection overlay and deliberately so. Once objects have identity,
+    the question a viewer is asking changes from "what are these things" to
+    "which one is which", and colouring three people identically because they
+    share a class makes exactly the thing you are watching for - a swap -
+    invisible.
+
+    Args:
+        trail: Draw each track's recent path. This is the quickest way to see an
+            identity switch by eye: the trail visibly teleports between objects.
+    """
+    canvas = image if image.flags.writeable else image.copy()
+    scale = max(0.4, min(0.7, canvas.shape[1] / 1600.0))
+
+    for track in result:
+        color = track_color(track.track_id)
+        # A coasting track is a prediction, not an observation, and is drawn
+        # dashed so the display never implies evidence that does not exist.
+        coasting = stale or track.is_coasting
+        if trail and len(track.history) > 1:
+            _draw_trail(canvas, track.history, color)
+        _draw_track_box(canvas, track, color, scale, thickness, show_confidence, coasting)
+    return canvas
+
+
+def track_color(track_id: int) -> tuple[int, int, int]:
+    """A stable, well-separated BGR colour for a track id."""
+    hue = ((track_id * 0.61803398875) + 0.35) % 1.0
+    r, g, b = colorsys.hsv_to_rgb(hue, 0.9, 1.0)
+    return int(b * 255), int(g * 255), int(r * 255)
+
+
+def _draw_track_box(
+    canvas: np.ndarray,
+    track: "Track",
+    color: tuple[int, int, int],
+    scale: float,
+    thickness: int,
+    show_confidence: bool,
+    coasting: bool,
+) -> None:
+    x1, y1, x2, y2 = track.box.to_int()
+    if coasting:
+        _dashed_rectangle(canvas, (x1, y1), (x2, y2), color, thickness)
+    else:
+        cv2.rectangle(canvas, (x1, y1), (x2, y2), color, thickness, cv2.LINE_AA)
+
+    text = track.entity_id
+    if show_confidence:
+        text += f" {track.confidence:.2f}"
+    if coasting:
+        text += " ?"
+
+    (text_w, text_h), baseline = cv2.getTextSize(text, _FONT, scale, 1)
+    label_top = y1 - text_h - baseline - 2
+    if label_top < 0:
+        label_top = y1 + 2
+    label_bottom = label_top + text_h + baseline + 2
+
+    cv2.rectangle(canvas, (x1, label_top), (x1 + text_w + 6, label_bottom), color, -1)
+    cv2.putText(
+        canvas,
+        text,
+        (x1 + 3, label_bottom - baseline),
+        _FONT,
+        scale,
+        _readable_text_color(color),
+        1,
+        cv2.LINE_AA,
+    )
+
+
+def _draw_trail(
+    canvas: np.ndarray, history: tuple[tuple[float, float], ...], color: tuple[int, int, int]
+) -> None:
+    """Draw the path a track has taken, fading toward the oldest point.
+
+    The fade is what makes it readable as a direction rather than a smear.
+    """
+    points = [(int(round(x)), int(round(y))) for x, y in history]
+    total = len(points)
+    for index in range(1, total):
+        weight = index / total
+        faded = tuple(int(channel * (0.25 + 0.75 * weight)) for channel in color)
+        cv2.line(canvas, points[index - 1], points[index], faded, 1, cv2.LINE_AA)
 
 
 def _dashed_rectangle(

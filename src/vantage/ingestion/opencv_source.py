@@ -38,6 +38,14 @@ from vantage.ingestion.base import FrameSource, SourceInfo, SourceKind
 
 log = get_logger(__name__)
 
+BLANK_LEVEL = 8
+"""Brightest pixel below which a frame is treated as carrying no picture.
+
+Deliberately low. The point is to catch a lens cap or a privacy shutter, not to
+second-guess a dark scene: even a night-time street has streetlights, and any
+real image has something above 8 somewhere in it.
+"""
+
 BACKENDS: dict[str, int] = {
     "any": cv2.CAP_ANY,
     "msmf": cv2.CAP_MSMF,
@@ -199,11 +207,20 @@ class OpenCVSource(FrameSource):
 
         A closed laptop privacy shutter is indistinguishable from a healthy
         camera by every property OpenCV reports: correct resolution, correct
-        frame rate, successful reads, all-zero pixels. This is a warning rather
-        than an error because a legitimately dark scene looks the same, and
-        refusing to start would be worse than saying so.
+        frame rate, successful reads, near-black pixels. This is a warning
+        rather than an error because a legitimately dark scene looks the same,
+        and refusing to start would be worse than saying so.
+
+        The threshold is not zero, which is what this originally tested. A real
+        sensor behind a closed shutter still produces thermal and read noise, so
+        the frames come back with a maximum value of two or three rather than
+        exactly zero - and an ``image.any()`` test silently passes them. That was
+        measured on this machine: a shuttered camera streamed 200 frames at a
+        maximum pixel value of 3, the detector correctly found nothing, and no
+        warning was issued to explain why. Anything below ``BLANK_LEVEL`` carries
+        no recoverable picture regardless of how it got that way.
         """
-        if not image.any():
+        if int(image.max()) < BLANK_LEVEL:
             log.warning(
                 "source is delivering blank frames",
                 extra={
