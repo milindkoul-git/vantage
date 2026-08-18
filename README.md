@@ -64,6 +64,10 @@ replaceable:
   identical detections on CPU.
 - **YOLOX detectors** (Apache-2.0) in three sizes, fetched on demand and **verified
   against pinned SHA-256 checksums**; weights are never committed.
+- **D-FINE detectors** (Apache-2.0) trained on Objects365 - **365 classes instead of
+  COCO's 80**, including the desk and office objects COCO omits entirely (`Pen/Pencil`,
+  `Marker`, `Stapler`, `Folder`, `Calculator`, `Notepaper`, `Tape`). A second adapter
+  family behind the same seam; the engine, backends, tracker and pipeline are untouched.
 - **Detections in original-frame pixel coordinates**, so nothing downstream ever learns
   that the detector letterboxed anything.
 - **Class-aware NMS**, so a person standing in front of a car cannot suppress the car.
@@ -145,6 +149,30 @@ vantage run --source webcam:0 --detect
 ```
 
 Press `q` or `Esc` to quit, `s` to save a PNG snapshot, `h` to toggle the HUD.
+
+### Bigger vocabulary, and open-vocabulary discovery
+
+```bash
+vantage models list                    # note the CLASSES column
+vantage run --source webcam:0 --track --device gpu --model dfine-s-obj365 --detect-interval 2
+```
+
+`dfine-s-obj365` knows 365 classes instead of COCO's 80, including `Pen/Pencil`, `Marker`,
+`Stapler`, `Folder` and `Calculator`. It costs ~84 ms/frame on the iGPU against
+`yolox-tiny`'s ~18 ms, so pair it with `--detect-interval 2`; the tracker's variable
+timestep absorbs the gap and the display stays at full rate.
+
+When even 365 classes is not enough, **discovery** takes arbitrary words:
+
+```bash
+pip install -e ".[discover]"           # adds the tokenizer, ~3 MB
+vantage discover --prompts "pen, stapler, coffee mug" --source webcam:0
+vantage discover --prompts "cable, adapter" --image desk.jpg --save found.png
+```
+
+This is a **separate tier on purpose**, not a switch on the live pipeline: it costs about
+12 seconds per prompt and runs on one frame. See section 8 for the measurements behind
+that split.
 
 ### Tracking (Phase 3)
 
@@ -366,6 +394,28 @@ was corrected. `RateMeter` now smooths the inter-arrival interval and inverts it
 
 An unknown key is an error with a suggested correction, never a silently ignored setting.
 A typo'd `targt_fps` that quietly does nothing costs an afternoon.
+
+### Vocabulary is a property of the weights, not a setting
+
+The most common misdiagnosis this platform invites is "the detector is bad, tune it".
+Often the object simply is not in the class list. COCO has 80 classes and none of them is
+a pen, so YOLOX has no output channel that could ever fire for one - no confidence
+threshold, model size or NMS setting changes that. `vantage models list` reports the class
+count per model for exactly this reason.
+
+Objects365 (365 classes) is the answer for ordinary objects, and it is a weights swap
+rather than an architecture change. The genuinely open-vocabulary models, which take
+arbitrary text prompts, are a different trade entirely - see the discovery tier below.
+
+### DETR-family models still need NMS here, whatever the papers say
+
+The DETR line is built on set prediction with Hungarian matching, and the literature is
+clear that non-maximum suppression is therefore unnecessary. That was written into the
+D-FINE adapter as fact and then measured to be false: on a live frame at a 0.30 threshold
+this export produced **six `Person` boxes for one person**, two pairs overlapping at IoU
+0.90 and 0.84. Unsuppressed, Phase 3 confirms each as a separate track and the system
+invents people. So class-aware NMS runs, and the module docstring records that the theory
+lost to the measurement.
 
 ### The detector was chosen on licence first, accuracy second
 
@@ -632,6 +682,30 @@ an emergent one.
 
 **Scope.** No pose, activity recognition, events, alerts, storage, dashboard, multi-camera
 orchestration, or identity. By design.
+
+**Open-vocabulary detection cannot run live on this hardware, and the split is deliberate.**
+Measured, not estimated:
+
+| Model | Vocabulary | Per frame | Throughput |
+|---|---|---|---|
+| `yolox-tiny` | 80 fixed | 18 ms | 57 fps |
+| `dfine-s-obj365` | 365 fixed | 84 ms | 12 fps |
+| `grounding-dino-tiny` | **any text** | ~12 s per prompt | 0.08 fps |
+
+That is a ~700x gap, not a tuning gap, which is why discovery is a separate command rather
+than a mode of `run`. Three findings shaped it, all from measurement:
+
+* **Text and image share one fused graph**, so prompt embeddings cannot be precomputed the
+  way OWL-ViT allows. Every pass pays the full cost.
+* **One prompt per pass is mandatory.** Batched, the model suppresses all but the strongest
+  phrase - `dog, bicycle, car` together scored 0.90/0.09/0.08, and separately 0.92/0.89/0.59.
+  The batched form is *wrong*, not merely weaker, so cost is linear in prompt count.
+* **CPU beats the iGPU here by 7x** for one-shot use: OpenVINO spends ~155 s compiling the
+  graph to save 9 s of inference. Discovery therefore defaults to whatever backend is
+  cheapest to start, not the fastest to run - the opposite of the live pipeline's choice.
+
+Token budget is capped at 32 (~8-10 short prompts): cost grows super-linearly with sequence
+length (32 -> 3.1 s, 128 -> 14.1 s) and 256 tokens crashes the iGPU kernel outright.
 
 **Tracking is motion-only, and long total occlusions break identity.** With no appearance
 model there is nothing to re-identify an object by, so recovery depends entirely on the

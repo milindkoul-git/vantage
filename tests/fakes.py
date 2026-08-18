@@ -113,6 +113,7 @@ class FakeBackend(InferenceBackend):
         self.calls = 0
         self.closed = False
         self.last_input: np.ndarray | None = None
+        self.last_extra: dict[str, np.ndarray] | None = None
 
     @property
     def info(self) -> BackendInfo:
@@ -120,9 +121,12 @@ class FakeBackend(InferenceBackend):
             name="fake", device="none", version="0", input_name="images", precision="fp32"
         )
 
-    def run(self, tensor: np.ndarray) -> list[np.ndarray]:
+    def run(
+        self, tensor: np.ndarray, extra: dict[str, np.ndarray] | None = None
+    ) -> list[np.ndarray]:
         self.calls += 1
         self.last_input = tensor
+        self.last_extra = extra
         return [self._output]
 
     def close(self) -> None:

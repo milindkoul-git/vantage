@@ -23,6 +23,7 @@ from vantage.core.errors import ConfigError
 from vantage.perception.labels import get_label_set
 
 _YOLOX_RELEASE = "https://github.com/Megvii-BaseDetection/YOLOX/releases/download/0.1.1rc0"
+_ONNX_COMMUNITY = "https://huggingface.co/onnx-community"
 
 
 @dataclass(frozen=True, slots=True)
@@ -103,6 +104,47 @@ CATALOG: dict[str, ModelSpec] = {
         source="https://github.com/Megvii-BaseDetection/YOLOX",
         description="640px input; the accuracy option, too slow for realtime CPU.",
         map_50_95=40.5,
+    ),
+    "dfine-s-obj365": ModelSpec(
+        key="dfine-s-obj365",
+        filename="dfine_s_obj365.onnx",
+        url=f"{_ONNX_COMMUNITY}/dfine_s_obj365-ONNX/resolve/main/onnx/model.onnx",
+        sha256="372feaa33ac6ba67d7df8589628f6abc395b3c6981c4edc70dfcfe2949751120",
+        size_bytes=42_123_225,
+        adapter="dfine",
+        input_size=(640, 640),
+        label_set="objects365",
+        license="Apache-2.0",
+        source="https://github.com/Peterande/D-FINE",
+        description="365 classes incl. Pen/Pencil, Marker, Stapler. 4.5x COCO's vocabulary.",
+        map_50_95=None,
+    ),
+    "dfine-m-obj365": ModelSpec(
+        key="dfine-m-obj365",
+        filename="dfine_m_obj365.onnx",
+        url=f"{_ONNX_COMMUNITY}/dfine_m_obj365-ONNX/resolve/main/onnx/model.onnx",
+        sha256="2fb7d73e2df5be2b1032381d191d6d26d1bca44b23d3eb79af1cbd9e3b19356c",
+        size_bytes=79_212_285,
+        adapter="dfine",
+        input_size=(640, 640),
+        label_set="objects365",
+        license="Apache-2.0",
+        source="https://github.com/Peterande/D-FINE",
+        description="Larger D-FINE. More accurate, roughly twice the cost of the small one.",
+        map_50_95=None,
+    ),    "grounding-dino-tiny": ModelSpec(
+        key="grounding-dino-tiny",
+        filename="grounding_dino_tiny_fp16.onnx",
+        url=f"{_ONNX_COMMUNITY}/grounding-dino-tiny-ONNX/resolve/main/onnx/model_fp16.onnx",
+        sha256="04c18d2db35569f11c47732f2e05ed3a71559a8903823fc581e90b0e3168c9ff",
+        size_bytes=360_393_267,
+        adapter="grounding-dino",
+        input_size=(800, 800),
+        label_set="open-vocabulary",
+        license="Apache-2.0",
+        source="https://github.com/IDEA-Research/GroundingDINO",
+        description="Open vocabulary: finds whatever you name. ~2.2 s/frame - discovery only.",
+        map_50_95=None,
     ),
 }
 

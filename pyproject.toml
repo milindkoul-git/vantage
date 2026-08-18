@@ -27,6 +27,11 @@ detect = [
     "onnxruntime>=1.20",   # portable CPU baseline
     "openvino>=2025.0",    # Intel CPU/iGPU; the only path to an Intel GPU here
 ]
+# Open-vocabulary discovery only. Kept separate because it exists for one
+# optional feature, and everything else must keep working without it.
+discover = [
+    "tokenizers>=0.20",
+]
 dev = [
     "pytest>=8.0",
 ]

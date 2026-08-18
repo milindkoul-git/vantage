@@ -157,6 +157,29 @@ def build_parser() -> argparse.ArgumentParser:
     models.add_argument("--model-dir", default=None, help="where models are cached")
     models.add_argument("--json", action="store_true")
 
+    discover = sub.add_parser(
+        "discover",
+        parents=[common],
+        help="open-vocabulary detection: find whatever you can name, on one frame",
+    )
+    discover.add_argument(
+        "--prompts",
+        required=True,
+        help="comma-separated things to look for, e.g. --prompts 'pen, stapler, mug'",
+    )
+    discover.add_argument(
+        "--source", default=None, help="source URI to grab a frame from (default: webcam:0)"
+    )
+    discover.add_argument("--image", default=None, help="a still image instead of a source")
+    discover.add_argument("--model", default=None, help="open-vocabulary model to use")
+    discover.add_argument("--device", choices=["auto", "cpu", "gpu"], default=None)
+    discover.add_argument("--conf", type=float, default=0.3, help="confidence threshold")
+    discover.add_argument("--model-dir", default=None)
+    discover.add_argument(
+        "--save", default=None, help="write an annotated PNG to this path"
+    )
+    discover.add_argument("--json", action="store_true")
+
     track = sub.add_parser(
         "track",
         parents=[common],
@@ -247,6 +270,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             return _cmd_bench(args)
         if command == "track":
             return _cmd_track(args)
+        if command == "discover":
+            return _cmd_discover(args)
         parser.error(f"unknown command {command!r}")
         return EXIT_ERROR
     except VantageError as exc:
@@ -360,6 +385,12 @@ def _cmd_models(args: argparse.Namespace) -> int:
                     "input": f"{spec.input_size[1]}x{spec.input_size[0]}",
                     "size_mb": round(spec.size_bytes / 1e6, 1),
                     "map": spec.map_50_95,
+                    # An open-vocabulary model has no fixed class list; reporting
+                    # "1" for its placeholder label would be actively misleading.
+                    "classes": (
+                        "open" if spec.label_set == "open-vocabulary"
+                        else str(spec.num_classes)
+                    ),
                     "license": spec.license,
                     "cached": cached,
                     "path": str(store.path_for(spec)) if cached else None,
@@ -371,13 +402,19 @@ def _cmd_models(args: argparse.Namespace) -> int:
             return EXIT_OK
 
         print(f"Models (cache: {store.directory})\n")
-        print(f"  {'KEY':13s} {'INPUT':9s} {'SIZE':>7s} {'mAP':>6s}  {'LICENSE':11s} STATUS")
+        # Width driven by the longest key so a new catalog entry cannot silently
+        # break the alignment, which is what happened when the D-FINE keys landed.
+        key_width = max(14, *(len(e["key"]) for e in entries)) if entries else 14
+        print(
+            f"  {'KEY':{key_width}s} {'INPUT':9s} {'SIZE':>7s} {'mAP':>6s}  "
+            f"{'CLASSES':>7s}  {'LICENSE':11s} STATUS"
+        )
         for entry in entries:
             status = "cached" if entry["cached"] else "not downloaded"
             accuracy = f"{entry['map']:.1f}" if entry["map"] else "n/a"
             print(
-                f"  {entry['key']:13s} {entry['input']:9s} {entry['size_mb']:5.1f}MB "
-                f"{accuracy:>6s}  {entry['license']:11s} {status}"
+                f"  {entry['key']:{key_width}s} {entry['input']:9s} {entry['size_mb']:5.1f}MB "
+                f"{accuracy:>6s}  {entry['classes']:>7s}  {entry['license']:11s} {status}"
             )
         print("\n  Fetch one with: vantage models pull <KEY>")
         print("  Weights are downloaded on demand and verified against a pinned SHA-256.")
@@ -413,6 +450,123 @@ def _download_progress(done: int, total: int) -> None:
         return
     percent = 100.0 * done / total
     print(f"\rdownloading... {percent:5.1f}% ({done / 1e6:.1f}/{total / 1e6:.1f} MB)", end="")
+
+
+def _cmd_discover(args: argparse.Namespace) -> int:
+    """Run one open-vocabulary pass and report what was found.
+
+    Deliberately single-frame. The model takes roughly two seconds per pass on
+    this class of hardware, so anything resembling a live loop would be a lie -
+    see :mod:`vantage.perception.discovery` for the measurements behind that.
+    """
+    import json
+
+    import cv2
+
+    from vantage.perception.discovery import build_discovery_engine
+
+    prompts = [p.strip() for p in args.prompts.split(",") if p.strip()]
+    if not prompts:
+        raise VantageError("--prompts was empty; try --prompts 'pen, stapler, mug'")
+
+    if args.image:
+        image = cv2.imread(args.image)
+        if image is None:
+            raise VantageError(f"could not read image: {args.image}")
+        origin = args.image
+    else:
+        from vantage.config.schema import SourceConfig
+        from vantage.ingestion.registry import create_source
+
+        uri = args.source or "webcam:0"
+        source = create_source(SourceConfig(uri=uri))
+        source.open()
+        try:
+            # A few frames of headroom: webcams need several to settle exposure,
+            # and discovering objects in an under-exposed first frame is a poor
+            # test of a model that costs two seconds to run.
+            for _ in range(8):
+                frame = source.read()
+        finally:
+            source.close()
+        image = frame.editable_copy()
+        origin = uri
+
+    from vantage.config.loader import load_config
+
+    # Only --config and --set apply here; the run-loop flags are not part of
+    # this command, so there is nothing to lower onto the config.
+    config = load_config(args.config, list(args.overrides or []))
+
+    engine = build_discovery_engine(
+        prompts,
+        model=args.model or "grounding-dino-tiny",
+        device=args.device or config.detection.device,
+        model_dir=args.model_dir or config.detection.model_dir,
+        allow_download=config.detection.allow_download,
+    )
+    try:
+        def _progress(index: int, total: int, prompt: str) -> None:
+            print(f"  [{index + 1}/{total}] looking for {prompt!r}...", flush=True)
+
+        print(
+            f"open-vocabulary search over {len(prompts)} prompt(s). "
+            "Each is a separate pass and takes several seconds."
+        )
+        result = engine.discover(image, confidence=args.conf, progress=_progress)
+    finally:
+        engine.close()
+
+    if args.json:
+        print(
+            json.dumps(
+                {
+                    "source": origin,
+                    "model": result.model,
+                    "prompts": list(result.prompts),
+                    "elapsed_ms": round(result.elapsed_ms, 1),
+                    "detections": [
+                        {
+                            "label": d.label,
+                            "confidence": round(d.confidence, 4),
+                            "box": [round(v, 1) for v in d.box.xyxy],
+                        }
+                        for d in result.detections
+                    ],
+                },
+                indent=2,
+            )
+        )
+    else:
+        print(f"\n{origin}: {result.describe()}")
+        for detection in result.detections:
+            x1, y1, x2, y2 = detection.box.to_int()
+            print(
+                f"   {detection.label:<22} {detection.confidence:.2f}  "
+                f"[{x1},{y1},{x2},{y2}]"
+            )
+        if not result.detections:
+            print("   (try a lower --conf, or different words)")
+
+    if args.save:
+        from vantage.perception.contracts import DetectionResult
+        from vantage.viz.overlay import draw_detections
+
+        annotated = draw_detections(
+            image,
+            DetectionResult(
+                detections=result.detections,
+                source_id="discover",
+                frame_index=0,
+                capture_wall=0.0,
+                frame_size=result.frame_size,
+            ),
+        )
+        if not cv2.imwrite(args.save, annotated):
+            raise VantageError(f"could not write {args.save}")
+        print(f"\nannotated frame -> {args.save}")
+
+    return EXIT_OK
 
 
 def _cmd_track(args: argparse.Namespace) -> int:

@@ -67,6 +67,18 @@ class ModelAdapter(ABC):
     ) -> list[Detection]:
         """Decode raw outputs into detections in **original frame** coordinates."""
 
+    def static_input_shapes(self) -> dict[str, list[int]] | None:
+        """Fully static shapes for every graph input, or ``None`` if not needed.
+
+        Single-input models do not need this: the backend can pin input 0 from
+        :attr:`input_size` alone. Multi-input graphs do, because a text-
+        conditioned model has several dynamic inputs and OpenVINO's GPU plugin
+        refuses to compile until *all* of them are static - it fails with
+        "to_shape was called on a dynamic shape", which names no input and is
+        therefore unhelpful about which one is at fault.
+        """
+        return None
+
     def label_for(self, class_id: int) -> str:
         """Name for a class index, degrading gracefully rather than raising.
 

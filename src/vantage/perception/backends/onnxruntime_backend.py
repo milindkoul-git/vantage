@@ -95,8 +95,13 @@ class OnnxRuntimeBackend(InferenceBackend):
     def info(self) -> BackendInfo:
         return self._info
 
-    def run(self, tensor: np.ndarray) -> list[np.ndarray]:
-        outputs = self._session.run(self._output_names, {self._input_name: tensor})
+    def run(
+        self, tensor: np.ndarray, extra: dict[str, np.ndarray] | None = None
+    ) -> list[np.ndarray]:
+        feed = {self._input_name: tensor}
+        if extra:
+            feed.update(extra)
+        outputs = self._session.run(self._output_names, feed)
         return [np.asarray(output) for output in outputs]
 
     def close(self) -> None:

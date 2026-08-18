@@ -25,7 +25,14 @@ def available_backends() -> dict[str, bool]:
     }
 
 
-def create_backend(name: str, model_path, device: str = "auto", threads: int = 0):
+def create_backend(
+    name: str,
+    model_path,
+    device: str = "auto",
+    threads: int = 0,
+    input_shape: tuple[int, int] | None = None,
+    input_shapes: dict[str, list[int]] | None = None,
+):
     """Construct a backend by name, with an actionable error if it is missing."""
     from vantage.core.errors import ConfigError
 
@@ -53,6 +60,9 @@ def create_backend(name: str, model_path, device: str = "auto", threads: int = 0
             )
         from vantage.perception.backends.onnxruntime_backend import OnnxRuntimeBackend
 
+        # ONNX Runtime handles dynamic shapes without the penalty OpenVINO's GPU
+        # plugin pays, so input_shape is accepted for a uniform factory signature
+        # and deliberately not used here.
         return OnnxRuntimeBackend(model_path, device=device, threads=threads)
 
     if normalised == "openvino":
@@ -63,7 +73,13 @@ def create_backend(name: str, model_path, device: str = "auto", threads: int = 0
             )
         from vantage.perception.backends.openvino_backend import OpenVinoBackend
 
-        return OpenVinoBackend(model_path, device=device, threads=threads)
+        return OpenVinoBackend(
+            model_path,
+            device=device,
+            threads=threads,
+            input_shape=input_shape,
+            input_shapes=input_shapes,
+        )
 
     raise ConfigError(
         f"unknown detection.backend {name!r}; valid values are "

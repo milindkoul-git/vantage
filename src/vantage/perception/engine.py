@@ -154,7 +154,7 @@ class DetectionEngine:
         prepared = self._adapter.preprocess(image)
         after_pre = self._clock.monotonic()
 
-        outputs = self._backend.run(prepared.tensor)
+        outputs = self._backend.run(prepared.tensor, prepared.extra or None)
         after_infer = self._clock.monotonic()
 
         detections = self._adapter.postprocess(
@@ -238,7 +238,14 @@ def build_engine(
 
     adapter_cls = get_adapter(spec.adapter)
     adapter = adapter_cls(input_size=spec.input_size, labels=spec.labels)
-    inference_backend = create_backend(backend, path, device=device, threads=threads)
+    inference_backend = create_backend(
+        backend,
+        path,
+        device=device,
+        threads=threads,
+        input_shape=spec.input_size,
+        input_shapes=adapter.static_input_shapes(),
+    )
 
     engine = DetectionEngine(
         adapter=adapter,

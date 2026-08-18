@@ -39,8 +39,18 @@ class InferenceBackend(ABC):
         """Resolved backend properties. Valid after construction."""
 
     @abstractmethod
-    def run(self, tensor: np.ndarray) -> list[np.ndarray]:
-        """Execute one forward pass and return the raw output tensors."""
+    def run(
+        self, tensor: np.ndarray, extra: dict[str, np.ndarray] | None = None
+    ) -> list[np.ndarray]:
+        """Execute one forward pass and return the raw output tensors.
+
+        Args:
+            tensor: The primary input, conventionally the image.
+            extra: Additional named inputs for multi-input graphs. Open-vocabulary
+                detectors take tokenised prompts alongside the image, so the
+                interface has to carry more than one array - but single-input
+                models (every fixed-vocabulary detector here) simply ignore it.
+        """
 
     @abstractmethod
     def close(self) -> None:

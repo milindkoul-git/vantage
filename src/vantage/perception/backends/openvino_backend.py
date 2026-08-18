@@ -40,6 +40,8 @@ class OpenVinoBackend(InferenceBackend):
         model_path: str | os.PathLike[str],
         device: str = "auto",
         threads: int = 0,
+        input_shape: tuple[int, int] | None = None,
+        input_shapes: dict[str, list[int]] | None = None,
     ) -> None:
         import openvino as ov
 
@@ -71,6 +73,27 @@ class OpenVinoBackend(InferenceBackend):
             config["INFERENCE_NUM_THREADS"] = str(threads)
 
         model = self._core.read_model(path)
+        if input_shapes:
+            # A multi-input graph: every dynamic input must be pinned, not just
+            # the image, or the GPU plugin refuses to compile at all.
+            model.reshape({name: shape for name, shape in input_shapes.items()})
+            log.debug(
+                "pinned all graph inputs to static shapes",
+                extra={"vantage_fields": {"inputs": sorted(input_shapes)}},
+            )
+        static = None if input_shapes else _static_shape_for(model, input_shape)
+        if static is not None:
+            # A graph exported with a dynamic input is legal but expensive: the
+            # GPU plugin cannot specialise its kernels and falls back to a
+            # general path. Measured on D-FINE here, 184 ms/frame dynamic
+            # against 69 ms pinned - a 2.7x difference for a shape the adapter
+            # already knows. YOLOX exports are static, which is why this never
+            # surfaced before a DETR-family model was added.
+            model.reshape({model.input(0).any_name: static})
+            log.debug(
+                "pinned dynamic input to a static shape",
+                extra={"vantage_fields": {"shape": static}},
+            )
         try:
             compiled = self._core.compile_model(model, resolved, config)
         except RuntimeError as exc:
@@ -155,8 +178,15 @@ class OpenVinoBackend(InferenceBackend):
     def info(self) -> BackendInfo:
         return self._info
 
-    def run(self, tensor: np.ndarray) -> list[np.ndarray]:
-        self._request.infer({self._input: tensor})
+    def run(
+        self, tensor: np.ndarray, extra: dict[str, np.ndarray] | None = None
+    ) -> list[np.ndarray]:
+        if extra:
+            feed: dict = {self._input.any_name: tensor}
+            feed.update(extra)
+        else:
+            feed = {self._input: tensor}
+        self._request.infer(feed)
         # copy=True is mandatory, not defensive. Tensor.data is a view onto the
         # infer request's internal buffer, which the *next* inference overwrites
         # in place - a retained output silently changes under its owner, and
@@ -172,6 +202,18 @@ class OpenVinoBackend(InferenceBackend):
         self._request = None  # type: ignore[assignment]
         self._compiled = None  # type: ignore[assignment]
         self._core = None  # type: ignore[assignment]
+
+
+
+def _static_shape_for(model, input_shape: tuple[int, int] | None) -> list[int] | None:
+    """The fully static input shape to compile with, or ``None`` to leave it alone."""
+    partial = model.input(0).get_partial_shape()
+    if not partial.is_dynamic:
+        return None
+    if input_shape is None:
+        return None
+    height, width = input_shape
+    return [1, 3, int(height), int(width)]
 
 
 def _normalise_precision(value: object) -> str:

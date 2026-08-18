@@ -6,10 +6,14 @@ means adding a file here, not touching engines, backends or contracts.
 """
 
 from vantage.perception.adapters.base import ModelAdapter, PreparedInput
+from vantage.perception.adapters.dfine import DFineAdapter
+from vantage.perception.adapters.grounding_dino import GroundingDinoAdapter
 from vantage.perception.adapters.yolox import YoloxAdapter
 
 ADAPTERS: dict[str, type[ModelAdapter]] = {
     "yolox": YoloxAdapter,
+    "dfine": DFineAdapter,
+    "grounding-dino": GroundingDinoAdapter,
 }
 
 
@@ -22,4 +26,12 @@ def get_adapter(name: str) -> type[ModelAdapter]:
         ) from None
 
 
-__all__ = ["ADAPTERS", "ModelAdapter", "PreparedInput", "YoloxAdapter", "get_adapter"]
+__all__ = [
+    "ADAPTERS",
+    "DFineAdapter",
+    "GroundingDinoAdapter",
+    "ModelAdapter",
+    "PreparedInput",
+    "YoloxAdapter",
+    "get_adapter",
+]
