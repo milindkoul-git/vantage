@@ -64,10 +64,6 @@ replaceable:
   identical detections on CPU.
 - **YOLOX detectors** (Apache-2.0) in three sizes, fetched on demand and **verified
   against pinned SHA-256 checksums**; weights are never committed.
-- **D-FINE detectors** (Apache-2.0) trained on Objects365 - **365 classes instead of
-  COCO's 80**, including the desk and office objects COCO omits entirely (`Pen/Pencil`,
-  `Marker`, `Stapler`, `Folder`, `Calculator`, `Notepaper`, `Tape`). A second adapter
-  family behind the same seam; the engine, backends, tracker and pipeline are untouched.
 - **Detections in original-frame pixel coordinates**, so nothing downstream ever learns
   that the detector letterboxed anything.
 - **Class-aware NMS**, so a person standing in front of a car cannot suppress the car.
@@ -115,6 +111,47 @@ runtime; the remaining 8 exercise real weights and deselect cleanly without them
 
 ---
 
+## 2d. What Phase 3.5 delivers
+
+An unplanned insertion, and the number says so. This improves the detection layer rather
+than adding a subsystem, so it is 3.5 and not 4 - taking the number 4 would have implied
+that pose estimation exists. It was prompted by a real failure report: the platform could
+not see a pen, and no confidence threshold was ever going to fix that. COCO has no `pen`
+output neuron, so YOLOX cannot answer the question at all.
+
+Two tiers, because the measurements say they are different jobs:
+
+- **A bigger fixed vocabulary.** **D-FINE detectors** (Apache-2.0) trained on Objects365 -
+  **365 classes instead of COCO's 80**, including the desk and office objects COCO omits
+  entirely (`Pen/Pencil`, `Marker`, `Stapler`, `Folder`, `Calculator`, `Notepaper`,
+  `Tape`). A second adapter family behind the existing seam: the engine, both backends,
+  the tracker, the overlay and the pipeline are untouched.
+- **Open vocabulary, on demand.** `vantage discover --prompts "..."` runs Grounding DINO
+  (Apache-2.0) against arbitrary words. Deliberately a separate command rather than a
+  switch on the live pipeline: it costs ~12 s per prompt against the live detector's
+  18 ms, and a ~700x gap is not a tuning gap.
+
+Three things measurement changed about the design:
+
+- **Prompts must be queried one at a time.** Batched, this export suppresses all but the
+  strongest phrase - `dog, bicycle, car` scored 0.90 / 0.09 / 0.08 together and
+  0.92 / 0.89 / 0.59 separately. That is wrong rather than merely weaker, so cost is
+  linear in prompt count and the answers are right.
+- **CPU beats the iGPU by 7x for discovery** - the opposite of the live pipeline's choice.
+  OpenVINO spends ~155 s compiling the graph to save ~9 s of inference on a one-shot pass.
+- **"DETR needs no NMS" was written here as fact, then measured to be false.** One person
+  produced six boxes, two pairs overlapping at IoU 0.90 and 0.84. Unsuppressed, Phase 3
+  confirms each as a separate track and invents people.
+
+Two latent bugs surfaced with it: OpenVINO was compiling **dynamic**-shape graphs unpinned
+(184 ms -> **84 ms** once reshaped before compile), which had never shown up because every
+YOLOX export is static; and the backend interface could not carry a multi-input graph at
+all.
+
+**449 tests** (+61), 441 of which need no camera, no model file and no inference runtime.
+
+---
+
 ## 3. Quick start
 
 Requires Python 3.11+ (developed on 3.13.1).
@@ -150,7 +187,7 @@ vantage run --source webcam:0 --detect
 
 Press `q` or `Esc` to quit, `s` to save a PNG snapshot, `h` to toggle the HUD.
 
-### Bigger vocabulary, and open-vocabulary discovery
+### Bigger vocabulary, and open-vocabulary discovery (Phase 3.5)
 
 ```bash
 vantage models list                    # note the CLASSES column
@@ -194,6 +231,23 @@ vantage track tune          # search for better parameters; reports held-out res
 
 `track eval` needs no camera, no model and no inference runtime — the detector is modelled,
 so it measures the tracker rather than the pair of them.
+
+### One-click launch (Windows)
+
+`webcam.bat` in the repository root runs the live pipeline without typing the command.
+Double-click it, or run `.\webcam.bat`. Anything you add is appended to the command and
+therefore overrides the defaults:
+
+```bat
+webcam.bat                                       :: dfine-s-obj365 on the iGPU, tracking on
+webcam.bat --model yolox-tiny --detect-interval 1 :: fast COCO mode
+webcam.bat --classes person --no-hud
+```
+
+`VANTAGE_MODEL`, `VANTAGE_DEVICE`, `VANTAGE_SOURCE` and `VANTAGE_INTERVAL` change the
+defaults without editing the file. No path is baked in - it resolves the virtual
+environment and the model cache relative to itself, so it survives a move or a fresh
+clone, and it holds the console open on failure so Explorer cannot swallow the error.
 
 ### More things to try
 
@@ -810,9 +864,30 @@ the tracker: it caught an off-by-one in `min_hits`, an off-frame coasting bug wo
 of MOTA, and two separate cases of the parameter search overfitting a benchmark that was too
 easy. INT8 quantisation is still deferred and still not needed.
 
-**Phase 4 onward — Pose and object state → temporal activity → spatial/interaction
-analysis → event engine → observation storage → dashboard → identity (optional) →
-advanced analytics → multi-camera scaling.**
+**Phase 3.5 — Larger detection vocabulary. Done, and unplanned.** Inserted ahead of the
+spec's Phase 4 because a real failure demanded it: the platform could not see a pen, and
+that is a property of COCO's output tensor rather than a threshold to tune. Numbered 3.5
+so that the spec's phase numbers keep meaning what they meant. Section 2d has the
+measurements.
+
+**The remainder, as originally specified.** The order reflects where the evidence points,
+not a fixed plan:
+
+| # | Phase | Status |
+|-----|-------|--------|
+| 1 | Video ingestion | Done |
+| 2 | Object detection | Done |
+| 3 | Multi-object tracking | Done |
+| 3.5 | Larger detection vocabulary | Done, inserted |
+| 4 | Human pose & object state | Next |
+| 5 | Temporal activity recognition | |
+| 6 | Spatial & interaction understanding | |
+| 7 | Event engine | |
+| 8 | Observation & event storage | |
+| 9 | Visualization / dashboard | |
+| 10 | Identity & enrolment | Optional - see below |
+| 11 | Advanced analytics | |
+| 12 | Optimization / multi-camera scaling | |
 
 ### Identity, later
 
