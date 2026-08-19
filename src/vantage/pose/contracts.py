@@ -229,12 +229,33 @@ class PoseResult:
             tally[pose.posture.value] = tally.get(pose.posture.value, 0) + 1
         return tally
 
+    def unknown_reasons(self) -> dict[str, int]:
+        """Why postures came back unknown, and how often each reason applied."""
+        tally: dict[str, int] = {}
+        for pose in self.poses:
+            if pose.posture is Posture.UNKNOWN and pose.posture_reason:
+                tally[pose.posture_reason] = tally.get(pose.posture_reason, 0) + 1
+        return tally
+
     def describe(self) -> str:
         if not self.poses:
             return "no poses"
         summary = ", ".join(f"{n}x {name}" for name, n in sorted(self.counts().items()))
         skipped = f", {self.skipped} over budget" if self.skipped else ""
-        return f"{len(self.poses)} poses ({summary}){skipped} in {self.total_ms:.1f} ms"
+        line = f"{len(self.poses)} poses ({summary}){skipped} in {self.total_ms:.1f} ms"
+
+        # An unexplained "unknown" is indistinguishable from a broken
+        # classifier, and on a desk webcam - which never sees anyone's legs -
+        # unknown is the *correct* answer almost all the time. Carrying the
+        # reason on the Pose was not enough: nothing surfaced it, so the one
+        # thing that tells a user "working as intended" was invisible.
+        reasons = self.unknown_reasons()
+        if reasons:
+            line += " - " + "; ".join(
+                reason if count == 1 else f"{reason} (x{count})"
+                for reason, count in sorted(reasons.items(), key=lambda kv: -kv[1])
+            )
+        return line
 
 
 def empty_pose_result(

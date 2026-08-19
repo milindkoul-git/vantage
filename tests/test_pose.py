@@ -586,3 +586,76 @@ class TestConfigWiring:
 
         args = build_parser().parse_args(["run", "--pose", "--no-face-keypoints"])
         assert "pose.include_face_keypoints=false" in _flag_overrides(args)
+
+
+class TestUnknownIsExplained:
+    """An unexplained "unknown" is indistinguishable from a broken classifier."""
+
+    def unknown_result(self, count: int = 1) -> PoseResult:
+        pose = make_pose(
+            {LEFT_SHOULDER: (140.0, 100.0), RIGHT_SHOULDER: (180.0, 100.0)}
+        )
+        estimate = classify(pose)
+        assert estimate.posture is Posture.UNKNOWN
+        return PoseResult(
+            poses=tuple(
+                Pose(
+                    keypoints=pose.keypoints,
+                    track_id=i,
+                    entity_id=f"person_{i}",
+                    box=BOX,
+                    posture=estimate.posture,
+                    posture_reason=estimate.reason,
+                )
+                for i in range(count)
+            ),
+            source_id="t",
+            frame_index=1,
+            capture_wall=1.0,
+            frame_size=(640, 480),
+            people_seen=count,
+        )
+
+    def test_describe_carries_the_reason(self) -> None:
+        assert "hip not visible" in self.unknown_result().describe()
+
+    def test_repeated_reasons_are_counted_not_repeated(self) -> None:
+        described = self.unknown_result(count=3).describe()
+        assert described.count("hip not visible") == 1
+        assert "x3" in described
+
+    def test_a_classified_posture_adds_no_reason_noise(self) -> None:
+        pose = make_pose(upright(200.0, 300.0, 400.0))
+        estimate = classify(pose)
+        result = PoseResult(
+            poses=(
+                Pose(
+                    keypoints=pose.keypoints,
+                    track_id=1,
+                    entity_id="person_1",
+                    box=BOX,
+                    posture=estimate.posture,
+                    posture_reason=estimate.reason,
+                ),
+            ),
+            source_id="t",
+            frame_index=1,
+            capture_wall=1.0,
+            frame_size=(640, 480),
+            people_seen=1,
+        )
+        assert result.unknown_reasons() == {}
+        assert " - " not in result.describe()
+
+    def test_hud_shows_why(self) -> None:
+        from vantage.viz.hud import HudRenderer
+
+        rows = HudRenderer()._compose_pose(self.unknown_result())
+        assert any("hip not visible" in str(row) for row in rows)
+
+    def test_hud_text_stays_ascii(self) -> None:
+        """OpenCV's Hershey fonts draw a box for anything they cannot render."""
+        from vantage.viz.hud import _shorten
+
+        assert _shorten("x" * 80, 20).isascii()
+        assert len(_shorten("x" * 80, 20)) == 20

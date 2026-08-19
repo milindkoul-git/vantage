@@ -211,6 +211,14 @@ class HudRenderer:
             rows.append(("skipped", f"{pose.skipped} over max_persons", _WARN))
         if len(pose):
             rows.append(("pose ms", f"{pose.total_ms / max(1, len(pose)):.1f} per person", _DIM))
+
+        # Show why, when nothing could be classified. "unknown" on its own reads
+        # as a fault; on a desk webcam it is the correct answer and the reason
+        # is the only thing that says so.
+        reasons = pose.unknown_reasons()
+        if reasons:
+            commonest = max(reasons.items(), key=lambda kv: kv[1])[0]
+            rows.append(("why", _shorten(commonest, 46), _DIM))
         return rows
 
     def _compose_tracking(
@@ -332,3 +340,12 @@ def _text_scale(width: int) -> float:
 
 def _shorten(text: str, limit: int) -> str:
     return text if len(text) <= limit else f"{text[: limit - 3]}..."
+
+
+def _shorten(text: str, limit: int) -> str:
+    """Trim to fit the HUD panel without wrapping it.
+
+    ASCII only: the Hershey fonts OpenCV ships cannot render a real ellipsis and
+    would draw a placeholder box instead.
+    """
+    return text if len(text) <= limit else text[: limit - 3].rstrip() + "..."
