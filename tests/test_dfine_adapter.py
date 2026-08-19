@@ -268,10 +268,36 @@ class TestCatalogIntegration:
         assert get_adapter("dfine") is DFineAdapter
 
     def test_every_catalog_entry_has_a_registered_adapter_and_label_set(self) -> None:
-        """Guards against a catalog entry naming something that does not exist."""
+        """Guards against a catalog entry naming something that does not exist.
+
+        Adapters live in two registries because detection and pose do not share
+        an interface, so the lookup follows ``spec.task``. Resolving every entry
+        through the detection registry - which is what this test did before pose
+        models existed - would either fail on them or, worse, tempt someone to
+        register a pose adapter there and get a type error at the first frame.
+        """
+        from vantage.pose.factory import _ADAPTERS as POSE_ADAPTERS
+
         for spec in CATALOG.values():
-            assert get_adapter(spec.adapter) is not None
+            if spec.task == "pose":
+                assert spec.adapter in POSE_ADAPTERS
+            else:
+                assert get_adapter(spec.adapter) is not None
             assert len(spec.labels) > 0
+
+    def test_archived_entries_pin_both_the_archive_and_the_member(self) -> None:
+        """A single pin would leave whichever file it did not cover unchecked."""
+        for spec in CATALOG.values():
+            if spec.is_archived:
+                assert spec.archive_sha256, f"{spec.key} pins no archive checksum"
+                assert spec.sha256 != spec.archive_sha256, (
+                    f"{spec.key} reuses one digest for both the archive and its "
+                    "member, so one of them is not actually being verified"
+                )
+                assert spec.archive_size_bytes
+            else:
+                assert spec.archive_sha256 is None
+                assert spec.archive_member is None
 
     def test_objects365_contains_what_coco_lacks(self) -> None:
         """The reason this model family was added at all."""

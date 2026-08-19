@@ -97,6 +97,36 @@ The names are the dataset's own, verbatim, including the compound forms
 """
 
 
+COCO_KEYPOINTS: tuple[str, ...] = (
+    "nose",
+    "left_eye",
+    "right_eye",
+    "left_ear",
+    "right_ear",
+    "left_shoulder",
+    "right_shoulder",
+    "left_elbow",
+    "right_elbow",
+    "left_wrist",
+    "right_wrist",
+    "left_hip",
+    "right_hip",
+    "left_knee",
+    "right_knee",
+    "left_ankle",
+    "right_ankle",
+)
+"""The 17 COCO body keypoints, in the order every model trained on that dataset
+emits them.
+
+These are **body landmarks, not a face descriptor**. The first five are coarse
+head points - a nose, two eyes, two ears - located to within a few pixels. They
+carry no texture, no embedding, and nothing from which a face could be matched
+or reconstructed; `pose.include_face_keypoints: false` drops them entirely for
+deployments that would rather not carry them at all. See the privacy stance in
+the README.
+"""
+
 LABEL_SETS: dict[str, tuple[str, ...]] = {
     "coco80": COCO_80,
     "objects365": OBJECTS365,
@@ -104,6 +134,7 @@ LABEL_SETS: dict[str, tuple[str, ...]] = {
     # fixed list to register. The placeholder keeps ModelSpec uniform; the real
     # labels are the prompts the caller supplies at runtime.
     "open-vocabulary": ("prompt",),
+    "coco-keypoints": COCO_KEYPOINTS,
 }
 
 

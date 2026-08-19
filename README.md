@@ -152,6 +152,66 @@ all.
 
 ---
 
+## 2e. What Phase 4 delivers
+
+Human pose and object state - the two halves of the spec's Phase 4, and both
+turn a per-frame observation into something with duration, which is what the
+activity recognition and event rules of later phases need.
+
+**Pose: RTMPose, top-down.**
+
+- **17 body landmarks per person** (Apache-2.0, from the official OpenMMLab
+  distribution), attached to the tracker's anonymous ``entity_id`` rather than
+  to an anonymous rectangle - so a later phase can ask what *this* entity has
+  been doing.
+- **Top-down, consuming tracks.** A bottom-up estimator finds every person in
+  the frame and then groups limbs to bodies; being handed a box means only the
+  second half of the problem is left. Phase 3 already produces boxes with stable
+  identity, so the expensive half was already solved.
+- **An explicit budget.** Cost is linear in people, so ``pose.max_persons`` caps
+  it and the result records how many people were *offered* against how many were
+  estimated. A skipped person appears on the HUD instead of quietly costing
+  frame rate.
+- **Coasting tracks are refused.** A predicted box is a guess about where a
+  hidden object is; cropping to it returns the occluder, and the model would
+  dutifully landmark it.
+
+**Posture: four classes from geometry, or an honest refusal.**
+
+Standing, sitting, crouching and lying, separated by two ratios - how far the
+knees fall below the hips, and the ankles below the knees - both normalised by
+torso length so they are free of scale and distance. Rules rather than a
+classifier, because these separate cleanly by hand and a learned model would
+need per-viewpoint labelled data and would return a number nobody can audit.
+
+When the joints a rule needs are not visible the answer is **unknown, with the
+reason attached** - "upright torso, but no knees visible: standing and sitting
+are indistinguishable without them". That is the ordinary case for a desk
+webcam, and it is the correct answer rather than a failure.
+
+**Object state: motion, dwell, bearing and path length, for every entity.**
+
+- No model, no weights, microseconds per frame: it reads the velocity the
+  tracker's Kalman filter already maintains rather than computing a new one.
+- **Speed in entity heights per second**, never pixels, so one threshold works
+  across the frame - a person at the far end of a corridor covers a handful of
+  pixels per second and the same person near the lens covers hundreds.
+- **Hysteresis plus a minimum hold.** Two thresholds with a dead band between
+  them, and a change must persist before it is published. Without both, an
+  entity near the boundary flaps several times a second and every flap resets
+  the dwell timer - destroying the one measurement the feature exists for.
+- **Structured observation records** (``EntityState.to_observation``) in the
+  shape the spec sketched for Phase 8 storage, with ``identity`` present and
+  always ``None``: the seam the identity layer would later fill.
+
+**Skeleton overlay** coloured by track id to match the boxes, drawing only the
+joints the classifier treated as observed.
+
+**546 tests** (+97), 527 of which need no camera, no model file and no inference
+runtime; the remaining 19 exercise real weights and deselect cleanly.
+
+---
+
 ## 3. Quick start
 
 Requires Python 3.11+ (developed on 3.13.1).
@@ -231,6 +291,30 @@ vantage track tune          # search for better parameters; reports held-out res
 
 `track eval` needs no camera, no model and no inference runtime — the detector is modelled,
 so it measures the tracker rather than the pair of them.
+
+### Pose and object state (Phase 4)
+
+```bash
+vantage models pull rtmpose-s
+vantage run --source webcam:0 --track --pose --device gpu
+```
+
+Each tracked person gets a skeleton coloured to match their box, and a posture
+label when it can be determined. Motion state - moving or stationary, with how
+long that has held - runs for **every** entity, person or not, and needs no
+model at all.
+
+```bash
+vantage run --source webcam:0 --track --pose --pose-max-persons 3   # cap the cost
+vantage run --source webcam:0 --track --pose --pose-interval 2      # every other step
+vantage run --source webcam:0 --track --pose --no-face-keypoints    # drop head landmarks
+vantage run --source webcam:0 --track --no-state                    # boxes only
+```
+
+If posture reads `unknown` on a desk webcam, that is the correct answer rather
+than a fault: a seated person and a standing one are identical from the hips up,
+and the classifier says so instead of guessing. The reason is carried on every
+pose and printed in the debug log.
 
 ### One-click launch (Windows)
 
@@ -365,6 +449,17 @@ vantage/
 │  ├─ evaluation.py  CLEAR MOT and IDF1
 │  ├─ tuning.py      parameter search with held-out validation
 │  └─ factory.py     config -> tracker (keeps config out of the algorithm)
+│
+├─ pose/          Phase 4: what shape a tracked person is in
+│  ├─ contracts.py   Keypoint, Pose, PoseResult, Posture (+ the privacy note)
+│  ├─ adapter.py     RTMPose: top-down affine, ImageNet norm, SimCC decode
+│  ├─ engine.py      tracks in, skeletons out, with an explicit budget
+│  ├─ posture.py     standing / sitting / crouching / lying, or a reasoned refusal
+│  └─ factory.py     config -> pose engine
+│
+├─ state/         Phase 4: what a tracked entity is doing, whatever it is
+│  ├─ contracts.py   MotionState, EntityState, the observation record
+│  └─ estimator.py   hysteresis, dwell timing, path length; no model, no weights
 │
 ├─ viz/           diagnostic display only; contains no analysis logic
 ├─ app.py         composition root - the only module that knows about all layers
@@ -523,6 +618,53 @@ Extrapolating size across a gap of no evidence asserts something nobody knows.
 
 Worth 1 point of pooled MOTA, 5 identity switches and 9 points of occlusion IDF1 on the
 benchmark — and it was invisible to every metric until someone looked at a rendered frame.
+
+### Posture is rules, and says "unknown" rather than guessing
+
+Four postures separate on two ratios that anyone can check by hand against a
+drawn skeleton. A learned classifier would need labelled data from each
+camera's viewpoint and would return a number nobody can audit, for a
+distinction this coarse.
+
+The consequence worth stating is the refusal. When the joints a rule needs are
+not visible - which is *most of the time* on a desk webcam, because it never
+sees anyone's legs - the classifier returns `unknown` and the reason why. An
+"unknown" that looks like a bug is much better than a confident "standing" that
+is a coin flip, and the reason string is what makes the difference visible.
+
+The rules read the image, not the world. A camera angled steeply down
+compresses vertical drops and will eventually read a standing person as
+crouching; one mounted sideways would read everyone as lying. There is no
+horizon estimate or calibration to correct for that, so a tilted installation
+needs the thresholds reviewed rather than trusted. This is written down because
+the failure is quiet: the numbers stay confident while being wrong.
+
+### Speed is measured in body heights, not pixels
+
+A person walking at the far end of a corridor covers a handful of pixels per
+second; the same person a metre from the lens covers hundreds. Both are
+walking. Dividing pixel velocity by box height makes one threshold work
+everywhere in the frame without camera calibration.
+
+It is imperfect and the imperfection is specific: someone walking directly at
+the camera grows rather than translates, and reads as slower than they are.
+Fixing that needs ground-plane geometry, which needs calibration, which is a
+Phase 6 concern.
+
+### Model provenance beat convenience for the pose weights
+
+RTMPose is distributed by OpenMMLab as a zip containing the graph. Loose
+re-uploads of the same file exist on model hubs and would have been a one-line
+catalog entry, but they are anonymous, carry no statement of which checkpoint or
+export config produced them, and **a SHA-256 pin cannot make a file trustworthy
+- it can only make it unchanging**. Reading the member out of the authoritative
+archive cost about forty lines in the model store and kept the provenance
+intact.
+
+Archived models are pinned twice, on the archive as transferred and on the
+extracted member before it is installed. The second pin is what preserves the
+store's first rule - a cached file is always re-hashed against the pin for the
+file it actually is - because what ends up cached is the member, not the archive.
 
 ### The tracker cannot see pixels, and that is a guarantee
 
@@ -705,6 +847,57 @@ visible rather than dropped from the table.
 
 Cost: **0.7 ms per step with 8 simultaneous objects**, against a 33 ms frame budget.
 
+### Pose cost, measured (Intel Iris Xe, one person)
+
+Isolated, in a tight loop with nothing else running:
+
+| Device | Preprocess | Inference | Decode | Total |
+|---|---|---|---|---|
+| CPU | 1.12 ms | 8.84 ms | 0.23 ms | **10.19 ms** |
+| iGPU | 0.94 ms | 3.74 ms | 0.20 ms | **4.88 ms** |
+
+Inside the live pipeline the same model costs more, and **how much more is not
+stable**:
+
+| Configuration | Detection | Pose, per person |
+|---|---|---|
+| Tight loop, nothing else running | - | 4.9 ms |
+| `yolox-tiny` on iGPU | 14.3 ms | 7.0 ms |
+| `yolox-s` on iGPU | 34.5 ms | 9.0 ms |
+| `yolox-s` on iGPU, separate run | 44.2 ms | 12.6 ms |
+| `yolox-s` on **CPU**, pose on iGPU | 280 ms | 9.1 ms |
+
+The obvious reading is contention for a single integrated GPU, and the first
+three rows support it. The last row does not: moving the detector off the GPU
+entirely should have been the cheapest case for pose and was not, and two runs
+of the same configuration differed by 3.6 ms. **So the cause is not established.**
+Contention, iGPU clock behaviour under bursty load, and cache pressure from the
+rest of the loop are all plausible and none was isolated.
+
+What is safe to plan around is the range rather than the mechanism: budget
+**5-13 ms per person** in a live pipeline on this hardware, not the 4.9 ms a
+benchmark loop suggests. With four people that is up to 50 ms of a 33 ms frame,
+which is why `pose.max_persons` and `pose.interval` exist and why the tracker's
+variable timestep matters.
+
+### Motion state on real footage
+
+A 120-frame clip of a real person, panning for 60 frames and then held still:
+
+======  ======================================================================
+Frame   Observed
+======  ======================================================================
+2       appears; state `unknown` - no velocity estimate worth the name yet
+25      `moving` at 0.154 h/s, bearing 84 degrees (due right, as the clip pans)
+59      still `moving`, 0.21 heights of path accumulated
+79      `stationary` - 0.63 s after the motion stopped, which is the 0.5 s
+        minimum hold plus filter lag
+119     `stationary` for 1.33 s, path length unchanged at 0.22 heights
+======  ======================================================================
+
+Path length stops accumulating when the entity stops, and the 0.21 heights
+recorded matches the 70 px of travel against a 343 px box.
+
 ### Occlusion tolerance, measured
 
 The capability the phase exists for, with exact ground truth (object crossing at 200 px/s):
@@ -734,8 +927,37 @@ an emergent one.
 
 ## 8. Known limitations
 
-**Scope.** No pose, activity recognition, events, alerts, storage, dashboard, multi-camera
+**Scope.** No activity recognition, events, alerts, storage, dashboard, multi-camera
 orchestration, or identity. By design.
+
+**Posture needs legs, and a desk webcam has none.** A seated person and a
+standing one are identical from the hips up, so on a typical head-and-shoulders
+webcam framing the classifier reports `unknown` and says why. That is correct,
+not broken - but it does mean posture is close to useless for desk-mounted
+cameras, and useful mainly for a camera that sees whole bodies.
+
+**Posture reads the image, not the world.** No horizon estimate and no
+calibration, so a steeply angled camera compresses vertical drops and will
+eventually read standing as crouching. A tilted installation needs the
+thresholds reviewed. The failure is quiet: the numbers stay confident.
+
+**Pose cost is linear in people, and its in-pipeline cost is not fully
+understood.** It runs at 4.9 ms per person in a tight loop but 5-13 ms inside
+the live pipeline, varying by 3.6 ms between two runs of the same
+configuration. Contention for the single iGPU is the obvious explanation and
+the measurements only partly support it (see section 7). Budget the range, not
+the benchmark. `pose.max_persons` and `pose.interval` bound the total; there is
+no adaptive control that lowers them automatically as a room fills.
+
+**Motion state cannot see motion toward the camera.** Speed is box displacement
+over box height, so someone walking directly at the lens grows rather than
+translates and reads as slower than they are. Correcting it needs ground-plane
+geometry, which needs calibration.
+
+**Transitions are reported late** by up to `state.min_state_s` (0.5 s by
+default) plus filter lag - measured at 0.63 s end to end. That is the price of
+dwell timings that mean something, and it is a poor trade for anything needing
+sub-second reaction.
 
 **Open-vocabulary detection cannot run live on this hardware, and the split is deliberate.**
 Measured, not estimated:
@@ -879,8 +1101,8 @@ not a fixed plan:
 | 2 | Object detection | Done |
 | 3 | Multi-object tracking | Done |
 | 3.5 | Larger detection vocabulary | Done, inserted |
-| 4 | Human pose & object state | Next |
-| 5 | Temporal activity recognition | |
+| 4 | Human pose & object state | Done |
+| 5 | Temporal activity recognition | Next |
 | 6 | Spatial & interaction understanding | |
 | 7 | Event engine | |
 | 8 | Observation & event storage | |

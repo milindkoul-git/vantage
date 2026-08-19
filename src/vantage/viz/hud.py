@@ -27,6 +27,8 @@ if TYPE_CHECKING:  # imported for typing only - viz must not require a detector
     from vantage.perception.contracts import DetectionResult
     from vantage.perception.engine import EngineInfo
     from vantage.tracking.contracts import TrackingResult
+    from vantage.pose.contracts import PoseResult
+    from vantage.state.contracts import StateResult
 
 _FONT = cv2.FONT_HERSHEY_SIMPLEX
 _WHITE = (245, 245, 245)
@@ -54,6 +56,8 @@ class HudRenderer:
         engine: "EngineInfo | None" = None,
         tracking: "TrackingResult | None" = None,
         entity_total: int = 0,
+        pose: "PoseResult | None" = None,
+        state: "StateResult | None" = None,
     ) -> np.ndarray:
         """Return an annotated copy of ``image``.
 
@@ -68,6 +72,10 @@ class HudRenderer:
             lines.extend(self._compose_detection(detection, engine))
         if tracking is not None:
             lines.extend(self._compose_tracking(tracking, entity_total))
+        if state is not None:
+            lines.extend(self._compose_state(state))
+        if pose is not None:
+            lines.extend(self._compose_pose(pose))
         if extra:
             lines.extend(("", value, _DIM) for value in extra)
 
@@ -159,6 +167,50 @@ class HudRenderer:
             )
         )
         rows.append(("det rate", f"max {1000.0 / total:.1f} fps" if total > 0 else "n/a", _DIM))
+        return rows
+
+    def _compose_state(
+        self, state: "StateResult"
+    ) -> list[tuple[str, str, tuple[int, int, int]]]:
+        """Motion state, and the longest-standing entity."""
+        if not state.states:
+            return []
+        counts = state.counts()
+        summary = ", ".join(f"{n} {name}" for name, n in sorted(counts.items()))
+        rows = [("motion", summary, _WHITE)]
+
+        # The longest dwell is the number an operator scans for: a thing that
+        # has not moved in a long time is what "anything unusual here?" means
+        # before the event engine exists to say so.
+        longest = max(state.states, key=lambda s: s.dwell_s)
+        if longest.dwell_s >= 1.0:
+            rows.append(
+                (
+                    "longest",
+                    f"{longest.entity_id} {longest.motion.value} {longest.dwell_s:.0f}s",
+                    _DIM,
+                )
+            )
+        return rows
+
+    def _compose_pose(
+        self, pose: "PoseResult"
+    ) -> list[tuple[str, str, tuple[int, int, int]]]:
+        """Pose telemetry, shown only when an estimator is attached."""
+        if not pose.people_seen:
+            return [("pose", "no people", _DIM)]
+
+        counts = pose.counts()
+        summary = ", ".join(f"{n} {name}" for name, n in sorted(counts.items()))
+        rows = [("pose", f"{len(pose)} of {pose.people_seen}: {summary}", _WHITE)]
+
+        # Over-budget people are called out rather than left as a silent
+        # difference between two numbers - it is the one pose failure that is
+        # invisible in the picture, because the skipped person still has a box.
+        if pose.skipped:
+            rows.append(("skipped", f"{pose.skipped} over max_persons", _WARN))
+        if len(pose):
+            rows.append(("pose ms", f"{pose.total_ms / max(1, len(pose)):.1f} per person", _DIM))
         return rows
 
     def _compose_tracking(

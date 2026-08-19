@@ -81,6 +81,43 @@ tracking:
   # to this value - otherwise those boxes never arrive and the algorithm quietly
   # degrades to plain IoU tracking. The run logs the change when it happens.
 
+pose:
+  # Human pose estimation. Off by default; requires tracking.enabled, because
+  # it is top-down and takes its person boxes from tracks - which is also what
+  # binds each skeleton to a stable anonymous entity id.
+  enabled: false
+  model: rtmpose-s       # 'vantage models list' shows the pose entries
+  backend: auto
+  device: auto
+  interval: 1            # estimate on every Nth TRACKING step, not every frame
+  max_persons: 6         # cost is linear in people; this caps it, largest first
+  min_keypoint_confidence: 0.3   # below this a landmark counts as not observed
+  classes: [person]
+  include_face_keypoints: true
+  threads: 0
+  model_dir: models
+  allow_download: true
+  #
+  # include_face_keypoints keeps the five head landmarks - nose, eyes, ears.
+  # They are coordinates, not a face descriptor: no crop is retained, no
+  # embedding is computed, and nothing here is comparable between two people.
+  # Set it to false and they are never constructed at all.
+
+state:
+  # Motion state, dwell timing and path length for every tracked entity.
+  # Needs no model and no weights - it reads the velocity the tracker's Kalman
+  # filter already maintains - so it is on whenever tracking is.
+  enabled: true
+  moving_above: 0.15     # entity heights per second at which motion is declared
+  stationary_below: 0.08 # lower edge of the dead band; between the two, state holds
+  min_state_s: 0.5       # a change must persist this long before it is published
+  min_age_s: 0.3         # no state claimed until a track has existed this long
+  #
+  # Speed is in heights per second rather than pixels so that one threshold
+  # works across the frame: a person at the far end of a corridor covers a
+  # handful of pixels per second and the same person near the lens covers
+  # hundreds, and both are walking.
+
 display:
   enabled: true
   window_name: "Vantage - Ingestion"

@@ -363,6 +363,95 @@ class TrackingConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class PoseConfig:
+    """Human pose estimation. Off by default; requires tracking.
+
+    Top-down estimation needs a person box, and taking that box from the
+    tracker rather than the detector is what binds each skeleton to a stable
+    anonymous entity instead of to an anonymous rectangle.
+    """
+
+    enabled: bool = False
+    model: str = "rtmpose-s"
+    backend: str = "auto"
+    device: str = "auto"
+
+    interval: int = 1
+    """Estimate on every Nth frame that ran detection. Multiplies with
+    ``detection.interval`` rather than replacing it: pose can never run on a
+    frame the tracker did not update, because it would be cropping to a box no
+    detector confirmed."""
+
+    max_persons: int = 6
+    """Hard cap on people estimated per frame, largest boxes first. Cost is
+    linear in people, so without a cap a crowd silently costs the frame rate."""
+
+    min_keypoint_confidence: float = 0.3
+    """Below this a landmark counts as not observed. Measured on real frames:
+    joints that are genuinely visible score 0.7 and above, invented ones fall
+    under 0.25, so the boundary sits in an empty band rather than through a
+    cluster."""
+
+    classes: list[str] = field(default_factory=lambda: ["person"])
+
+    include_face_keypoints: bool = True
+    """Keep the five head landmarks - nose, eyes, ears. They are coordinates,
+    not a face descriptor (see :mod:`vantage.pose.contracts`), but a deployment
+    that would rather not carry them can drop them here and they are never
+    constructed."""
+
+    threads: int = 0
+    model_dir: str = "models"
+    allow_download: bool = True
+
+    def __post_init__(self) -> None:
+        if self.interval < 1:
+            raise ConfigError(f"pose.interval must be >= 1, got {self.interval}")
+        if self.max_persons < 1:
+            raise ConfigError(f"pose.max_persons must be >= 1, got {self.max_persons}")
+        if not 0.0 <= self.min_keypoint_confidence < 1.0:
+            raise ConfigError(
+                f"pose.min_keypoint_confidence must be in [0, 1), got "
+                f"{self.min_keypoint_confidence}"
+            )
+        if not self.classes:
+            raise ConfigError("pose.classes must name at least one label to estimate")
+
+
+@dataclass(frozen=True, slots=True)
+class StateConfig:
+    """Motion state, dwell timing and path length for every tracked entity.
+
+    Needs no model and no weights - it reads the velocity the tracker's Kalman
+    filter already maintains - so it is on by default whenever tracking is.
+    """
+
+    enabled: bool = True
+
+    moving_above: float = 0.15
+    """Entity heights per second at which motion is declared. Height-relative
+    rather than pixels, so one threshold holds across the frame regardless of
+    how far away the entity is."""
+
+    stationary_below: float = 0.08
+    """The lower edge of the dead band. Between the two, state persists."""
+
+    min_state_s: float = 0.5
+    min_age_s: float = 0.3
+
+    def __post_init__(self) -> None:
+        for name in ("moving_above", "stationary_below", "min_state_s", "min_age_s"):
+            if getattr(self, name) < 0:
+                raise ConfigError(f"state.{name} must be >= 0")
+        if self.stationary_below > self.moving_above:
+            raise ConfigError(
+                f"state.stationary_below ({self.stationary_below}) must not exceed "
+                f"state.moving_above ({self.moving_above}); inverted, there is no dead "
+                "band and the hysteresis that keeps dwell timings meaningful does nothing"
+            )
+
+
+@dataclass(frozen=True, slots=True)
 class DisplayConfig:
     """The Phase 1 diagnostic viewer.
 
@@ -416,6 +505,8 @@ class VantageConfig:
     ingest: IngestConfig = field(default_factory=IngestConfig)
     detection: DetectionConfig = field(default_factory=DetectionConfig)
     tracking: TrackingConfig = field(default_factory=TrackingConfig)
+    pose: PoseConfig = field(default_factory=PoseConfig)
+    state: StateConfig = field(default_factory=StateConfig)
     display: DisplayConfig = field(default_factory=DisplayConfig)
 
     def __post_init__(self) -> None:
@@ -424,4 +515,10 @@ class VantageConfig:
                 "tracking.enabled requires detection.enabled: the tracker consumes "
                 "detections and has no other source of objects. Enable detection, or "
                 "pass --detect along with --track."
+            )
+        if self.pose.enabled and not self.tracking.enabled:
+            raise ConfigError(
+                "pose.enabled requires tracking.enabled: pose estimation is top-down "
+                "and takes its person boxes from tracks, which is also what binds each "
+                "skeleton to a stable entity id. Pass --track along with --pose."
             )

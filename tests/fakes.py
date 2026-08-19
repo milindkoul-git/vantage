@@ -172,3 +172,52 @@ def make_engine(
         capture_wall=1_700_000_000.0,
     )
     return engine, frame
+
+
+class FakePoseBackend(InferenceBackend):
+    """Returns SimCC output tensors with peaks at chosen bins.
+
+    Lets the whole pose path - warp, normalisation, decode, inverse transform,
+    posture rules - run with no weights and no inference runtime, which is what
+    keeps the default suite download-free.
+    """
+
+    def __init__(
+        self,
+        peaks: list[tuple[int, int]] | None = None,
+        *,
+        keypoints: int = 17,
+        bins: tuple[int, int] = (384, 512),
+        score: float = 0.9,
+    ) -> None:
+        # Centre bins by default, which decode to the exact centre of the
+        # cropped region - the easiest result to reason about in a test.
+        self.peaks = peaks or [(bins[0] // 2, bins[1] // 2)] * keypoints
+        self.keypoints = keypoints
+        self.bins = bins
+        self.score = score
+        self.calls = 0
+        self.closed = False
+        self.last_input: np.ndarray | None = None
+
+    @property
+    def info(self) -> BackendInfo:
+        return BackendInfo(
+            name="fake", device="none", version="0", input_name="input", precision="fp32"
+        )
+
+    def run(
+        self, tensor: np.ndarray, extra: dict[str, np.ndarray] | None = None
+    ) -> list[np.ndarray]:
+        self.calls += 1
+        self.last_input = tensor
+        width_bins, height_bins = self.bins
+        simcc_x = np.zeros((1, self.keypoints, width_bins), dtype=np.float32)
+        simcc_y = np.zeros((1, self.keypoints, height_bins), dtype=np.float32)
+        for index, (x_bin, y_bin) in enumerate(self.peaks[: self.keypoints]):
+            simcc_x[0, index, x_bin] = self.score
+            simcc_y[0, index, y_bin] = self.score
+        return [simcc_x, simcc_y]
+
+    def close(self) -> None:
+        self.closed = True

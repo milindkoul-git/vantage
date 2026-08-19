@@ -12,6 +12,13 @@ system's behaviour. That leads to three rules:
 3. **Never overwrite silently.** A hash mismatch is an error naming both
    digests, not a re-download that papers over a substituted upstream file.
 
+Some upstream projects ship the graph inside an archive rather than as a loose
+file - OpenMMLab distributes RTMPose that way. Those are pinned twice: once on
+the archive as downloaded, and once on the extracted member before it is
+installed. The second pin is what keeps rule 1 intact, because the file that
+ends up cached is the member rather than the archive, and a cached file is
+always re-hashed against the pin for the file it actually is.
+
 Models live outside the repository (``models/`` is git-ignored) because binary
 weights in git history are a permanent tax on every clone.
 """
@@ -23,6 +30,7 @@ import os
 import shutil
 import urllib.error
 import urllib.request
+import zipfile
 from pathlib import Path
 from typing import Callable
 
@@ -88,11 +96,55 @@ class ModelStore:
 
         return self._download(spec, path, progress)
 
+    def _install_member(self, spec: ModelSpec, archive: Path, destination: Path) -> None:
+        """Extract the one pinned member of ``archive`` to ``destination``.
+
+        Only the named member is ever read - never ``extractall`` - so a crafted
+        archive cannot write outside the model directory whatever its entries
+        claim to be called.
+        """
+        assert spec.archive_member is not None
+        temporary = destination.with_suffix(destination.suffix + ".member")
+        try:
+            with zipfile.ZipFile(archive) as bundle:
+                try:
+                    source = bundle.open(spec.archive_member)
+                except KeyError:
+                    raise VantageError(
+                        f"archive for model {spec.key!r} does not contain the expected "
+                        f"member {spec.archive_member!r}. The upstream layout has "
+                        f"changed, so the catalog entry must be reviewed rather than "
+                        f"guessed at. Members present: {bundle.namelist()[:6]}"
+                    ) from None
+                with source, temporary.open("wb") as handle:
+                    shutil.copyfileobj(source, handle, _CHUNK)
+        except zipfile.BadZipFile as exc:
+            temporary.unlink(missing_ok=True)
+            raise VantageError(
+                f"archive for model {spec.key!r} is not a readable zip: {exc}"
+            ) from exc
+
+        actual = sha256_of(temporary)
+        if actual != spec.sha256:
+            temporary.unlink(missing_ok=True)
+            raise VantageError(
+                f"member {spec.archive_member!r} of model {spec.key!r} does not match "
+                f"its pinned checksum.\n"
+                f"  expected sha256: {spec.sha256}\n"
+                f"  actual sha256:   {actual}\n"
+                "The archive verified but its contents did not. Nothing was installed."
+            )
+        shutil.move(str(temporary), str(destination))
+
     def _download(
         self, spec: ModelSpec, destination: Path, progress: Callable[[int, int], None] | None
     ) -> Path:
         self._directory.mkdir(parents=True, exist_ok=True)
         temporary = destination.with_suffix(destination.suffix + ".partial")
+        # For an archived model the bytes on the wire are the archive, so that
+        # is what this transfer is checked against; the member is verified
+        # separately once it has been extracted.
+        expected_sha = spec.archive_sha256 or spec.sha256
 
         log.info(
             "downloading model",
@@ -100,8 +152,9 @@ class ModelStore:
                 "vantage_fields": {
                     "model": spec.key,
                     "url": spec.url,
-                    "size_mb": round(spec.size_bytes / 1e6, 1),
+                    "size_mb": round(spec.download_size_bytes / 1e6, 1),
                     "license": spec.license,
+                    "archived": spec.is_archived,
                 }
             },
         )
@@ -113,7 +166,9 @@ class ModelStore:
                 spec.url, headers={"User-Agent": "vantage/model-store"}
             )
             with urllib.request.urlopen(request, timeout=_TIMEOUT_S) as response:
-                declared = int(response.headers.get("Content-Length") or spec.size_bytes)
+                declared = int(
+                    response.headers.get("Content-Length") or spec.download_size_bytes
+                )
                 with temporary.open("wb") as handle:
                     while chunk := response.read(_CHUNK):
                         handle.write(chunk)
@@ -130,19 +185,26 @@ class ModelStore:
             ) from exc
 
         actual = digest.hexdigest()
-        if actual != spec.sha256:
+        if actual != expected_sha:
             temporary.unlink(missing_ok=True)
             raise VantageError(
                 f"downloaded model {spec.key!r} does not match its pinned checksum.\n"
-                f"  expected sha256: {spec.sha256}\n"
+                f"  expected sha256: {expected_sha}\n"
                 f"  actual sha256:   {actual}\n"
                 "The remote file has changed or the download was corrupted. "
                 "Nothing was installed."
             )
 
-        # Rename only after verification: a file at the final path is, by
-        # construction, one that already passed its hash check.
-        shutil.move(str(temporary), str(destination))
+        if spec.is_archived:
+            # The archive is scratch space; only the verified member is kept.
+            try:
+                self._install_member(spec, temporary, destination)
+            finally:
+                temporary.unlink(missing_ok=True)
+        else:
+            # Rename only after verification: a file at the final path is, by
+            # construction, one that already passed its hash check.
+            shutil.move(str(temporary), str(destination))
         log.info(
             "model ready",
             extra={

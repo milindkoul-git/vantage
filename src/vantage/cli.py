@@ -130,6 +130,34 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="seconds a track survives unmatched before it is dropped",
     )
+    run.add_argument(
+        "--pose",
+        action="store_true",
+        help="estimate human pose for tracked people (implies --track)",
+    )
+    run.add_argument("--pose-model", default=None, help="pose model (see 'vantage models list')")
+    run.add_argument(
+        "--pose-interval",
+        type=int,
+        default=None,
+        help="estimate pose on every Nth tracking step (1 = every step)",
+    )
+    run.add_argument(
+        "--pose-max-persons",
+        type=int,
+        default=None,
+        help="most people to estimate per frame, largest boxes first",
+    )
+    run.add_argument(
+        "--no-face-keypoints",
+        action="store_true",
+        help="drop the five head landmarks (nose, eyes, ears) before they are constructed",
+    )
+    run.add_argument(
+        "--no-state",
+        action="store_true",
+        help="disable motion/dwell state estimation, which is otherwise on with tracking",
+    )
     run.add_argument("--no-display", action="store_true", help="run headless")
     run.add_argument("--no-hud", action="store_true", help="show video without the telemetry panel")
     run.add_argument("--scale", type=float, default=None, help="window scale factor")
@@ -382,12 +410,17 @@ def _cmd_models(args: argparse.Namespace) -> int:
             entries.append(
                 {
                     "key": spec.key,
+                    "task": spec.task,
                     "input": f"{spec.input_size[1]}x{spec.input_size[0]}",
                     "size_mb": round(spec.size_bytes / 1e6, 1),
                     "map": spec.map_50_95,
                     # An open-vocabulary model has no fixed class list; reporting
                     # "1" for its placeholder label would be actively misleading.
-                    "classes": (
+                    # For a pose model this column counts keypoints, not
+                    # classes, which is why the header says OUTPUTS and the TASK
+                    # column exists to say which it is. Sharing one number under
+                    # a "CLASSES" heading would read as a 17-class detector.
+                    "outputs": (
                         "open" if spec.label_set == "open-vocabulary"
                         else str(spec.num_classes)
                     ),
@@ -406,16 +439,18 @@ def _cmd_models(args: argparse.Namespace) -> int:
         # break the alignment, which is what happened when the D-FINE keys landed.
         key_width = max(14, *(len(e["key"]) for e in entries)) if entries else 14
         print(
-            f"  {'KEY':{key_width}s} {'INPUT':9s} {'SIZE':>7s} {'mAP':>6s}  "
-            f"{'CLASSES':>7s}  {'LICENSE':11s} STATUS"
+            f"  {'KEY':{key_width}s} {'TASK':6s} {'INPUT':9s} {'SIZE':>7s} {'mAP':>6s}  "
+            f"{'OUTPUTS':>7s}  {'LICENSE':11s} STATUS"
         )
         for entry in entries:
             status = "cached" if entry["cached"] else "not downloaded"
             accuracy = f"{entry['map']:.1f}" if entry["map"] else "n/a"
             print(
-                f"  {entry['key']:{key_width}s} {entry['input']:9s} {entry['size_mb']:5.1f}MB "
-                f"{accuracy:>6s}  {entry['classes']:>7s}  {entry['license']:11s} {status}"
+                f"  {entry['key']:{key_width}s} {entry['task']:6s} {entry['input']:9s} "
+                f"{entry['size_mb']:5.1f}MB "
+                f"{accuracy:>6s}  {entry['outputs']:>7s}  {entry['license']:11s} {status}"
             )
+        print("\n  OUTPUTS is classes for a detector and keypoints for a pose model.")
         print("\n  Fetch one with: vantage models pull <KEY>")
         print("  Weights are downloaded on demand and verified against a pinned SHA-256.")
         return EXIT_OK
@@ -804,6 +839,9 @@ def _flag_overrides(args: argparse.Namespace) -> list[str]:
         ("detection.interval", args.detect_interval),
         ("tracking.min_hits", args.track_min_hits),
         ("tracking.max_lost_s", args.track_max_lost),
+        ("pose.model", args.pose_model),
+        ("pose.interval", args.pose_interval),
+        ("pose.max_persons", args.pose_max_persons),
         # The logging flags must go through the config too, or the reload inside
         # _cmd_run would quietly discard them.
         ("app.log_level", args.log_level),
@@ -820,9 +858,17 @@ def _flag_overrides(args: argparse.Namespace) -> list[str]:
         overrides.append("display.enabled=false")
     if args.no_hud:
         overrides.append("display.hud=false")
-    if args.detect or args.track:
+    if args.detect or args.track or args.pose:
         overrides.append("detection.enabled=true")
-    if args.track:
+    if args.pose:
+        # Pose is top-down and takes its boxes from tracks, so --pose implies
+        # --track for the same reason --track implies --detect.
+        overrides.append("pose.enabled=true")
+    if args.no_face_keypoints:
+        overrides.append("pose.include_face_keypoints=false")
+    if args.no_state:
+        overrides.append("state.enabled=false")
+    if args.track or args.pose:
         # --track implies --detect rather than erroring, because a tracker with
         # no detector cannot do anything at all; requiring both flags would be
         # pedantry with no failure mode to protect against.

@@ -29,13 +29,17 @@ from vantage.ingestion.pipeline import IngestionPipeline, PipelineStats
 from vantage.ingestion.registry import create_source
 from vantage.tracking.factory import build_tracker
 from vantage.viz.hud import HudRenderer
-from vantage.viz.overlay import draw_detections, draw_tracks
+from vantage.viz.overlay import draw_detections, draw_poses, draw_tracks
 from vantage.viz.window import KEY_NONE, FrameSink, NullSink, WindowSink
 
 if TYPE_CHECKING:  # detection is optional; importing it eagerly would make
     # onnxruntime/openvino a hard requirement for plain ingestion.
     from vantage.perception.engine import DetectionEngine
     from vantage.tracking.base import Tracker
+    from vantage.pose.contracts import PoseResult
+    from vantage.pose.engine import PoseEngine
+    from vantage.state.contracts import StateResult
+    from vantage.state.estimator import StateEstimator
 
 log = get_logger(__name__)
 
@@ -60,6 +64,9 @@ class RunResult:
     detection_summary: dict[str, Any] = field(default_factory=dict)
     tracking_steps: int = 0
     tracking_summary: dict[str, Any] = field(default_factory=dict)
+    pose_steps: int = 0
+    pose_summary: dict[str, Any] = field(default_factory=dict)
+    state_summary: dict[str, Any] = field(default_factory=dict)
 
     def summary(self) -> str:
         base = (
@@ -83,6 +90,21 @@ class RunResult:
                 f"{detail.get('entities_total', 0)} distinct entities, "
                 f"{detail.get('active', 0)} active at end, "
                 f"{detail.get('mean_ms', 0.0):.2f} ms mean"
+            )
+        if self.pose_steps:
+            detail = self.pose_summary
+            base += (
+                f"\npose: {self.pose_steps} passes on {detail.get('model', '?')}, "
+                f"{detail.get('people', 0)} people estimated, "
+                f"{detail.get('mean_ms_per_person', 0.0):.1f} ms mean per person"
+            )
+            if detail.get("skipped"):
+                base += f", {detail['skipped']} skipped over budget"
+        if self.state_summary:
+            detail = self.state_summary
+            base += (
+                f"\nstate: {detail.get('entities', 0)} entities, "
+                f"{detail.get('moving', 0)} moving at end"
             )
         return base
 
@@ -145,6 +167,13 @@ def run_ingestion(
     tracking_steps = 0
     track_latency = LatencyTracker(window=240)
 
+    estimator = _build_pose_engine(config)
+    latest_pose = None
+    pose_steps = 0
+    pose_latency = LatencyTracker(window=240)
+    state_estimator = _build_state_estimator(config)
+    latest_state = None
+
     try:
         info = pipeline.start()
         log.info("ingestion started", extra={"vantage_fields": {"source": info.describe()}})
@@ -184,6 +213,26 @@ def run_ingestion(
                                     "vantage_fields": {"summary": latest_tracking.describe()}
                                 },
                             )
+                        if state_estimator is not None:
+                            latest_state = state_estimator.update(latest_tracking)
+                        # Pose counts tracking steps rather than delivered
+                        # frames: its interval is relative to the frames the
+                        # tracker actually advanced on, so the two intervals
+                        # compose instead of interfering.
+                        if estimator is not None and (
+                            (tracking_steps - 1) % config.pose.interval == 0
+                        ):
+                            latest_pose = estimator.estimate(frame, latest_tracking)
+                            if latest_pose.poses:
+                                pose_latency.observe(latest_pose.total_ms / len(latest_pose))
+                            pose_steps += 1
+                            if latest_pose.poses:
+                                log.debug(
+                                    "poses",
+                                    extra={
+                                        "vantage_fields": {"summary": latest_pose.describe()}
+                                    },
+                                )
                 else:
                     # Carry the last pass forward so the display stays populated
                     # between inferences, but mark it so it is drawn as stale.
@@ -199,6 +248,8 @@ def run_ingestion(
                         engine=detector.info if detector else None,
                         tracking=latest_tracking,
                         entity_total=_entity_total(tracker),
+                        pose=latest_pose,
+                        state=latest_state,
                     )
                     if hud_enabled
                     else frame.editable_copy()
@@ -210,6 +261,14 @@ def run_ingestion(
                     image = draw_tracks(image, latest_tracking, stale=detection_stale)
                 elif latest_detection is not None:
                     image = draw_detections(image, latest_detection, stale=detection_stale)
+                # Skeletons go on top of boxes, not instead of them: the box is
+                # what carries the entity id and the dashed/solid distinction.
+                if latest_pose is not None:
+                    image = draw_poses(
+                        image,
+                        latest_pose,
+                        min_confidence=config.pose.min_keypoint_confidence,
+                    )
                 key = sink.show(image)
                 if key != KEY_NONE:
                     action = _handle_key(key, frame, stats, config, snapshots)
@@ -243,6 +302,8 @@ def run_ingestion(
             sink.close()
         if owns_engine and detector is not None:
             detector.close()
+        if estimator is not None:
+            estimator.close()
 
     final = pipeline.stats()
     result = RunResult(
@@ -258,6 +319,9 @@ def run_ingestion(
         detection_summary=_detection_summary(detector, detect_latency, detections_run),
         tracking_steps=tracking_steps,
         tracking_summary=_tracking_summary(tracker, track_latency, tracking_steps),
+        pose_steps=pose_steps,
+        pose_summary=_pose_summary(estimator, pose_latency, latest_pose, pose_steps),
+        state_summary=_state_summary(latest_state),
     )
     log.info("run complete", extra={"vantage_fields": {"summary": result.summary()}})
     return result
@@ -326,6 +390,68 @@ def _effective_confidence(config: VantageConfig) -> float:
             },
         )
     return floor
+
+
+def _build_pose_engine(config: VantageConfig) -> "PoseEngine | None":
+    """Construct the pose estimator, or ``None`` when pose is disabled.
+
+    Built before the source opens, for the same reason the detector is: a
+    missing model should fail before a camera is acquired.
+    """
+    if not config.pose.enabled:
+        return None
+    from vantage.pose.factory import pose_engine_from_config
+
+    estimator = pose_engine_from_config(config.pose)
+    estimator.warmup(config.detection.warmup)
+    return estimator
+
+
+def _build_state_estimator(config: VantageConfig) -> "StateEstimator | None":
+    """Construct the entity-state estimator, or ``None`` when it is off."""
+    if not (config.state.enabled and config.tracking.enabled):
+        return None
+    from vantage.state import StateEstimator, StateParams
+
+    return StateEstimator(
+        StateParams(
+            moving_above=config.state.moving_above,
+            stationary_below=config.state.stationary_below,
+            min_state_s=config.state.min_state_s,
+            min_age_s=config.state.min_age_s,
+        )
+    )
+
+
+def _pose_summary(
+    estimator: "PoseEngine | None",
+    latency: LatencyTracker,
+    latest: "PoseResult | None",
+    passes: int,
+) -> dict[str, Any]:
+    if estimator is None or not passes:
+        return {}
+    return {
+        "model": estimator.info.model,
+        "backend": estimator.info.backend,
+        "device": estimator.info.device,
+        "license": estimator.info.license,
+        "keypoints": estimator.info.num_keypoints,
+        "passes": passes,
+        "people": len(latest) if latest else 0,
+        "skipped": latest.skipped if latest else 0,
+        "mean_ms_per_person": round(latency.mean, 2),
+    }
+
+
+def _state_summary(latest: "StateResult | None") -> dict[str, Any]:
+    if latest is None:
+        return {}
+    return {
+        "entities": len(latest),
+        "moving": len(latest.moving()),
+        "counts": latest.counts(),
+    }
 
 
 def _detection_summary(

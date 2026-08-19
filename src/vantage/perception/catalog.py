@@ -24,6 +24,7 @@ from vantage.perception.labels import get_label_set
 
 _YOLOX_RELEASE = "https://github.com/Megvii-BaseDetection/YOLOX/releases/download/0.1.1rc0"
 _ONNX_COMMUNITY = "https://huggingface.co/onnx-community"
+_MMPOSE_SDK = "https://download.openmmlab.com/mmpose/v1/projects/rtmposev1/onnx_sdk"
 
 
 @dataclass(frozen=True, slots=True)
@@ -34,6 +35,9 @@ class ModelSpec:
     filename: str
     url: str
     sha256: str
+    """SHA-256 of the file that is finally cached and loaded - the ``.onnx``
+    itself, including when it arrives inside an archive."""
+
     size_bytes: int
     adapter: str
     input_size: tuple[int, int]
@@ -45,6 +49,38 @@ class ModelSpec:
     description: str
     map_50_95: float | None = None
     """Reported COCO val AP, for choosing a size on evidence rather than vibes."""
+
+    task: str = "detect"
+    """What the model produces: ``detect``, ``pose``. The catalog is shared
+    because fetching, verifying, licensing and input geometry are identical
+    concerns whatever the head predicts; only the decoding differs, and that is
+    the adapter's job."""
+
+    archive_member: str | None = None
+    """Path inside the archive at :attr:`url`, when the upstream project ships a
+    zip rather than a bare ``.onnx``.
+
+    RTMPose is distributed this way by OpenMMLab. Re-uploads of the loose file
+    exist on model hubs, but they are anonymous, carry no statement of which
+    checkpoint or export config produced them, and a SHA pin cannot make a file
+    trustworthy - it can only make it *unchanging*. Reading the member out of
+    the authoritative archive costs ~40 lines in the store and keeps provenance
+    intact."""
+
+    archive_sha256: str | None = None
+    """SHA-256 of the archive itself. Both this and :attr:`sha256` are checked:
+    the archive on download, the extracted member before it is installed."""
+
+    archive_size_bytes: int | None = None
+
+    @property
+    def is_archived(self) -> bool:
+        return self.archive_member is not None
+
+    @property
+    def download_size_bytes(self) -> int:
+        """Bytes actually transferred, which is the archive when there is one."""
+        return self.archive_size_bytes or self.size_bytes
 
     @property
     def labels(self) -> tuple[str, ...]:
@@ -146,9 +182,55 @@ CATALOG: dict[str, ModelSpec] = {
         description="Open vocabulary: finds whatever you name. ~2.2 s/frame - discovery only.",
         map_50_95=None,
     ),
+    "rtmpose-t": ModelSpec(
+        key="rtmpose-t",
+        filename="rtmpose_t_body7_256x192.onnx",
+        url=f"{_MMPOSE_SDK}/rtmpose-t_simcc-body7_pt-body7_420e-256x192-026a1439_20230504.zip",
+        sha256="a6c2f6a3896a4d51131d14d7a80a3d08b50f559af5a58a45d5b098aef510a70f",
+        size_bytes=13_350_364,
+        archive_member=(
+            "20230831/rtmpose_onnx/"
+            "rtmpose-t_simcc-body7_pt-body7_420e-256x192-026a1439_20230504/end2end.onnx"
+        ),
+        archive_sha256="937003a70832d9cc34ea16927f504792f3133e92dda1b9c626236bbbe9e805cb",
+        archive_size_bytes=12_547_710,
+        adapter="rtmpose",
+        input_size=(256, 192),
+        label_set="coco-keypoints",
+        license="Apache-2.0",
+        source="https://github.com/open-mmlab/mmpose/tree/main/projects/rtmpose",
+        description="Smallest RTMPose. 17 body keypoints, one person per pass.",
+        task="pose",
+    ),
+    "rtmpose-s": ModelSpec(
+        key="rtmpose-s",
+        filename="rtmpose_s_body7_256x192.onnx",
+        url=f"{_MMPOSE_SDK}/rtmpose-s_simcc-body7_pt-body7_420e-256x192-acd4a1ef_20230504.zip",
+        sha256="9aeb635b83f86aea45cf45d85798f7eba1a162de8e0d721c44e54fe5eebaf47d",
+        size_bytes=21_890_172,
+        archive_member=(
+            "20230831/rtmpose_onnx/"
+            "rtmpose-s_simcc-body7_pt-body7_420e-256x192-acd4a1ef_20230504/end2end.onnx"
+        ),
+        archive_sha256="7673922e531014906ca4f0f239b7e233b740146a10b632deaa2a28d45470d802",
+        archive_size_bytes=20_496_303,
+        adapter="rtmpose",
+        input_size=(256, 192),
+        label_set="coco-keypoints",
+        license="Apache-2.0",
+        source="https://github.com/open-mmlab/mmpose/tree/main/projects/rtmpose",
+        description="More accurate RTMPose. On the iGPU it costs 0.5 ms more than -t.",
+        task="pose",
+    ),
 }
 
 DEFAULT_MODEL = "yolox-nano"
+DEFAULT_POSE_MODEL = "rtmpose-s"
+
+
+def models_for_task(task: str) -> dict[str, ModelSpec]:
+    """Catalog entries producing a given output type."""
+    return {key: spec for key, spec in CATALOG.items() if spec.task == task}
 
 
 def get_model_spec(key: str) -> ModelSpec:

@@ -23,6 +23,9 @@ from vantage.perception.contracts import Detection, DetectionResult
 if TYPE_CHECKING:  # tracking is optional at render time; the overlay must not
     # make it an import-time requirement for plain detection display.
     from vantage.tracking.contracts import Track, TrackingResult
+    from vantage.pose.contracts import PoseResult
+
+from vantage.pose.contracts import SKELETON, Posture
 
 _FONT = cv2.FONT_HERSHEY_SIMPLEX
 
@@ -235,3 +238,75 @@ def _readable_text_color(background: tuple[int, int, int]) -> tuple[int, int, in
     blue, green, red = background
     luminance = 0.299 * red + 0.587 * green + 0.114 * blue
     return (0, 0, 0) if luminance > 140 else (255, 255, 255)
+
+
+def draw_poses(
+    image: np.ndarray,
+    result: "PoseResult",
+    *,
+    min_confidence: float = 0.3,
+    thickness: int = 2,
+    show_posture: bool = True,
+) -> np.ndarray:
+    """Draw skeletons over the tracks they belong to.
+
+    Same ownership contract as :func:`draw_detections`: a writeable ``image`` is
+    drawn on in place and returned.
+
+    Colour is keyed on ``track_id``, matching :func:`draw_tracks`, so a skeleton
+    and its box are visibly the same entity.
+
+    Joints below ``min_confidence`` are **not drawn at all**, and neither is any
+    bone that depends on one. This is the same threshold the posture classifier
+    treats as "not observed", so what you see is what the rules saw. Drawing
+    low-confidence joints faintly was tried first and was worse than useless: an
+    invented ankle at the bottom of the crop looks exactly like a real one that
+    is merely dim, and the picture stopped agreeing with the classification
+    printed next to it.
+    """
+    canvas = image if image.flags.writeable else image.copy()
+    scale = max(0.4, min(0.7, canvas.shape[1] / 1600.0))
+
+    for pose in result:
+        color = track_color(pose.track_id)
+        points: dict[int, tuple[int, int]] = {}
+        for index in pose.visible(min_confidence):
+            keypoint = pose.keypoint(index)
+            if keypoint is not None:
+                points[index] = (int(round(keypoint.x)), int(round(keypoint.y)))
+
+        for start, end in SKELETON:
+            if start in points and end in points:
+                cv2.line(canvas, points[start], points[end], color, thickness, cv2.LINE_AA)
+        for point in points.values():
+            cv2.circle(canvas, point, thickness + 1, color, -1, cv2.LINE_AA)
+
+        if show_posture and pose.posture is not Posture.UNKNOWN:
+            label = f"{pose.posture.value} {pose.posture_confidence:.2f}"
+            x1, y1, _, _ = pose.box.to_int()
+            _draw_label(canvas, label, (x1, max(0, y1 - 4)), color, scale)
+    return canvas
+
+
+def _draw_label(
+    canvas: np.ndarray,
+    text: str,
+    origin: tuple[int, int],
+    color: tuple[int, int, int],
+    scale: float,
+) -> None:
+    """A filled caption with contrast-picked text, anchored above ``origin``."""
+    (width, height), _ = cv2.getTextSize(text, _FONT, scale, 1)
+    x, y = origin
+    top = max(0, y - height - 6)
+    cv2.rectangle(canvas, (x, top), (x + width + 6, top + height + 6), color, -1)
+    cv2.putText(
+        canvas,
+        text,
+        (x + 3, top + height + 1),
+        _FONT,
+        scale,
+        _readable_text_color(color),
+        1,
+        cv2.LINE_AA,
+    )
