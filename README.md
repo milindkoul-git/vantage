@@ -318,20 +318,35 @@ pose and printed in the debug log.
 
 ### One-click launch (Windows)
 
-`webcam.bat` in the repository root runs the live pipeline without typing the command.
-Double-click it, or run `.\webcam.bat`. Anything you add is appended to the command and
-therefore overrides the defaults:
+`webcam.bat` in the repository root runs the live pipeline without typing the
+command. Double-click it, or run `.\webcam.bat`. An optional first word picks
+what to run:
 
 ```bat
-webcam.bat                                       :: dfine-s-obj365 on the iGPU, tracking on
-webcam.bat --model yolox-tiny --detect-interval 1 :: fast COCO mode
-webcam.bat --classes person --no-hud
+webcam.bat            :: pose (default) - people, skeletons, motion state
+webcam.bat objects    :: 365-class detection + tracking, no pose
+webcam.bat plain      :: detection only, no tracking and no pose
 ```
 
-`VANTAGE_MODEL`, `VANTAGE_DEVICE`, `VANTAGE_SOURCE` and `VANTAGE_INTERVAL` change the
-defaults without editing the file. No path is baked in - it resolves the virtual
-environment and the model cache relative to itself, so it survives a move or a fresh
-clone, and it holds the console open on failure so Explorer cannot swallow the error.
+The two detection modes use **different detectors on purpose**, and the reason
+is measured rather than assumed. Pose costs about 5 ms per person on the iGPU,
+but only when the detector leaves the GPU room: paired with `yolox-tiny`
+(10.8 ms) the whole pipeline holds 30 fps, while the 365-class
+`dfine-s-obj365` (84 ms) needs the frame budget for itself.
+
+Anything else you type is appended and therefore overrides the defaults:
+
+```bat
+webcam.bat pose --pose-max-persons 2
+webcam.bat objects --classes person,laptop
+webcam.bat --source webcam:1 --no-hud
+```
+
+`VANTAGE_MODEL`, `VANTAGE_DEVICE`, `VANTAGE_SOURCE` and `VANTAGE_INTERVAL`
+change the defaults without editing the file. No path is baked in - it resolves
+the virtual environment and the model cache relative to itself, so it survives a
+move or a fresh clone, and it holds the console open on failure so Explorer
+cannot swallow the error.
 
 ### More things to try
 
