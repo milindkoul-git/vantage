@@ -378,6 +378,53 @@ runtime.
 
 ---
 
+## 2j. What Phase 9 delivers
+
+A local web dashboard, and the project packaged as an application.
+
+**The dashboard runs on the standard library.** `ThreadingHTTPServer`, MJPEG
+video, and one self-contained HTML file. **No new dependencies and no build
+step.** FastAPI and React were the specification's own suggestion and were
+declined on the same grounds as SciPy, shapely and psutil before them: the
+standard library already does this, and the alternative brings a dependency tree
+plus a Node toolchain for a single-camera local UI.
+
+Everything it needs already existed. Queries come from the Phase 8 store, which
+is indexed. Live video is MJPEG - multipart JPEG over plain HTTP - so there is no
+WebSocket to keep alive or reconnect. The JSON payloads are built in a module
+that knows nothing about HTTP, so moving to ASGI later is a transport change
+rather than a rewrite.
+
+**Loopback by default, and that is a security decision.** It serves live camera
+footage with no authentication. Binding wider is allowed - behind a reverse
+proxy that is legitimate - but must be asked for, and logs a warning saying what
+it means. Every endpoint is read-only; pruning and configuration stay on the CLI.
+
+Two modes:
+
+```bash
+vantage run --track --pose --dashboard   # live view + history
+vantage dashboard --db vantage.db        # history only, no pipeline
+```
+
+Each endpoint reports its own availability rather than returning empty data,
+which a viewer cannot tell apart from a quiet scene.
+
+**Packaged two ways.** A wheel (342 KB, `pip install`) and a standalone
+directory bundle with `vantage.exe` (**408 MB**) that runs on a machine with no
+Python. Double-clicked with no arguments it starts the camera, serves the
+dashboard and opens a browser at it; with arguments it is the ordinary CLI.
+
+Verified on the packaged build: detection on the Intel iGPU via OpenVINO at
+**10.9 ms/frame**, the dashboard serving live JSON at 104 fps, and JPEG
+snapshots - so the OpenVINO plugin DLLs and the bundled HTML both survive
+packaging, which are the two things that usually do not.
+
+**838 tests**, 819 of which need no camera, no model file and no inference
+runtime.
+
+---
+
 ## 3. Quick start
 
 Requires Python 3.11+ (developed on 3.13.1).
@@ -590,6 +637,42 @@ vantage history prune --older-than 30d
 `prune` refuses to run without an explicit horizon, because the wrong guess
 deletes data.
 
+### Dashboard (Phase 9)
+
+```bash
+vantage run --source webcam:0 --track --pose --dashboard
+```
+
+Then open <http://localhost:8080>: live view with overlays, the entities being
+tracked right now, and searchable history from the store. Or browse a recorded
+history with no pipeline running:
+
+```bash
+vantage dashboard --db vantage.db
+```
+
+It binds to **loopback only** unless told otherwise, because it serves live
+camera footage with no authentication:
+
+```bash
+vantage run --dashboard --dashboard-host 0.0.0.0   # warns, and means it
+```
+
+### Packaging
+
+```bash
+python -m build --wheel                              # dist/vantage-0.1.0-*.whl
+pip install -e ".[package]"
+pyinstaller packaging/vantage.spec --noconfirm       # dist/vantage/vantage.exe
+```
+
+The executable is a **directory bundle, not one file**: `--onefile` unpacks
+~408 MB to a temporary directory on every launch, which is several seconds
+before the first frame and a copy left behind after an unclean exit.
+
+Run with no arguments it is the application - camera, dashboard, browser. Run
+with arguments it is the CLI.
+
 ### One-click launch (Windows)
 
 `webcam.bat` in the repository root runs the live pipeline without typing the
@@ -763,6 +846,12 @@ vantage/
 ├─ state/         Phase 4: what a tracked entity is doing, whatever it is
 │  ├─ contracts.py   MotionState, EntityState, the observation record
 │  └─ estimator.py   hysteresis, dwell timing, path length; no model, no weights
+│
+├─ dashboard/     Phase 9: the local web UI, on the standard library
+│  ├─ live.py        one slot for the newest frame; never a queue
+│  ├─ api.py         JSON payloads that know nothing about HTTP
+│  ├─ server.py      routing, MJPEG, loopback-by-default binding
+│  └─ static/        one self-contained HTML file, no build step
 │
 ├─ storage/       Phase 8: the history, in SQLite
 │  ├─ contracts.py   StoredEvent, StoredObservation, Query, the Store Protocol
@@ -1594,6 +1683,44 @@ every time because the process handle was passed as an undeclared integer,
 which ctypes truncates to 32 bits. Memory read as "unavailable on this
 platform" on the platform it was written for.
 
+### The dashboard is a local tool, and its limits are structural
+
+`http.server` is not a production web server, and this is not a production
+deployment target. Three things follow, and all three are choices rather than
+oversights:
+
+* **No authentication.** Anyone who can reach the port sees the camera. That is
+  why it binds to loopback and why binding wider warns.
+* **No TLS.** MJPEG and JSON go over plain HTTP. Remote access should terminate
+  TLS and authenticate at a reverse proxy in front of it.
+* **Read-only.** There is no endpoint that changes anything, because every
+  write endpoint would be an unauthenticated write endpoint.
+
+It scales to a handful of viewers on one machine. It is not the answer for many
+cameras and many users, which is what the ASGI move exists for - and the reason
+the JSON payloads are built in a module that knows nothing about HTTP.
+
+### What packaging actually costs
+
+The bundle is **408 MB**, and the breakdown is worth knowing before deciding it
+is too big: OpenVINO is 226 MB of it, OpenCV 113 MB, numpy 55 MB. Dropping ONNX
+Runtime saves 45 MB and loses the portable CPU baseline; dropping OpenVINO saves
+226 MB and loses the GPU entirely.
+
+Two things do not survive packaging by default, and both fail at *runtime*
+rather than at build time, which is what makes them worth naming:
+
+* **OpenVINO's plugin DLLs.** They are loaded by reading `plugins.xml` and
+  dlopening whatever it names, so static analysis never sees them. The symptom
+  is "no GPU" on a machine that plainly has one.
+* **The dashboard HTML.** It is data, not code, so neither the wheel nor the
+  bundle picks it up without being told. The symptom is a 500 on the page from
+  an installed copy that works perfectly from a source checkout.
+
+Both are handled - in `[tool.setuptools.package-data]` and in
+`packaging/vantage.spec` - and both were verified on the built artefact rather
+than assumed.
+
 ## 8. Known limitations
 
 **Scope.** No activity recognition, events, alerts, storage, dashboard, multi-camera
@@ -1804,7 +1931,7 @@ not a fixed plan:
 | 6 | Spatial & interaction understanding | Done |
 | 7 | Event engine | Done |
 | 8 | Observation & event storage | Done |
-| 9 | Visualization / dashboard | Next |
+| 9 | Visualization / dashboard | Done |
 | 10 | Identity & enrolment | Optional - see below |
 | 11 | Advanced analytics | |
 | 12 | Optimization / multi-camera scaling | |

@@ -36,6 +36,12 @@ dev = [
     "pytest>=8.0",
     "ruff>=0.6",   # lint and format; CI gates on both
     "mypy>=1.11",  # type checking; CI gates on it
+    "build>=1.2",  # wheel and sdist
+]
+# Building a standalone executable. Kept out of `dev` because it is a large
+# dependency wanted only when producing a release artefact.
+package = [
+    "pyinstaller>=6.6",
 ]
 
 [project.scripts]
@@ -43,6 +49,13 @@ vantage = "vantage.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+# The dashboard page is data, not code, so it is not picked up by the package
+# finder. Without this an installed wheel serves a 500 on "/" - the file is
+# simply not there - which works perfectly from a source checkout and fails
+# only once packaged.
+"vantage.dashboard" = ["static/*.html"]
 
 [tool.ruff]
 line-length = 96

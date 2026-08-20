@@ -280,6 +280,7 @@ def run_ingestion(
     latest_events = None
     events_raised = 0
     store, store_writer, recorder = _build_storage(config)
+    live_feed, dashboard = _build_dashboard(config, store)
 
     # One guard per stage. A stage that throws loses its frame, not the run;
     # a stage that throws repeatedly is disabled and said so, loudly.
@@ -480,7 +481,11 @@ def run_ingestion(
                     # between inferences, but mark it so it is drawn as stale.
                     detection_stale = latest_detection is not None
 
-            if config.display.enabled:
+            # Overlays are rendered when *either* consumer wants them. A
+            # headless run with a dashboard still needs the boxes drawn -
+            # otherwise the browser shows raw video and the analysis is
+            # invisible, which is the opposite of what was asked for.
+            if config.display.enabled or live_feed is not None:
                 image = (
                     hud.render(
                         frame.image,
@@ -524,17 +529,37 @@ def run_ingestion(
                     image = draw_relations(image, latest_spatial, latest_tracking)
                 if latest_activity is not None and latest_tracking is not None:
                     image = draw_activities(image, latest_activity, latest_tracking)
-                key = sink.show(image)
-                if key != KEY_NONE:
-                    action = _handle_key(key, frame, stats, config, snapshots)
-                    if action == "quit":
-                        reason = "user quit"
+                if live_feed is not None:
+                    live_feed.publish(
+                        image,
+                        _live_snapshot(
+                            frame,
+                            stats,
+                            latest_state,
+                            latest_pose,
+                            latest_activity,
+                            latest_spatial,
+                            latest_events,
+                            stages,
+                        ),
+                    )
+                # Guarded rather than skipped with `continue`: the shutdown
+                # check, the stats log and the resource sample all come after
+                # this block, and a headless run with a dashboard needs every
+                # one of them. Written as a continue first, which silently
+                # disabled all three.
+                if config.display.enabled:
+                    key = sink.show(image)
+                    if key != KEY_NONE:
+                        action = _handle_key(key, frame, stats, config, snapshots)
+                        if action == "quit":
+                            reason = "user quit"
+                            break
+                        if action == "toggle_hud":
+                            hud_enabled = not hud_enabled
+                    if sink.is_closed():
+                        reason = "window closed"
                         break
-                    if action == "toggle_hud":
-                        hud_enabled = not hud_enabled
-                if sink.is_closed():
-                    reason = "window closed"
-                    break
 
             if controller.is_set():
                 reason = "shutdown signal"
@@ -576,6 +601,8 @@ def run_ingestion(
             # every clean shutdown - which would be the most reproducible data
             # loss the system could have.
             store_writer.close()
+        if dashboard is not None:
+            dashboard.stop()
         if store is not None:
             _prune_store(store, config)
             store.close()
@@ -735,6 +762,95 @@ def _build_governor(config: VantageConfig) -> LoadGovernor | None:
             raise_after_s=adaptive.raise_after_s,
             lower_after_s=adaptive.lower_after_s,
         ),
+    )
+
+
+def _build_dashboard(config: VantageConfig, store: Any) -> tuple[Any, Any]:
+    """Start the dashboard, or return ``(None, None)`` when it is disabled.
+
+    The live feed is created here rather than inside the server because the run
+    loop publishes into it and the server reads from it; neither owns the other.
+    """
+    if not config.dashboard.enabled:
+        return None, None
+    from vantage.dashboard.factory import build_dashboard
+    from vantage.dashboard.live import LiveFeed
+
+    feed = LiveFeed(
+        jpeg_quality=config.dashboard.jpeg_quality, max_width=config.dashboard.max_width
+    )
+    server = build_dashboard(
+        config.dashboard,
+        store=store,
+        feed=feed,
+        camera_id=config.source.id or "camera_01",
+    )
+    url = server.start()
+    log.info("dashboard started", extra={"vantage_fields": {"url": url}})
+    return feed, server
+
+
+def _live_snapshot(
+    frame: Frame,
+    stats: PipelineStats,
+    state: Any,
+    pose: Any,
+    activity: Any,
+    spatial: Any,
+    events: Any,
+    stage_registry: Any,
+) -> Any:
+    """Assemble what the dashboard shows about right now.
+
+    Built per displayed frame, so it stays small: names and short strings, never
+    keypoint arrays. The browser polls this once a second; the picture comes
+    down the MJPEG stream instead.
+    """
+    from vantage.dashboard.live import LiveSnapshot
+
+    postures = {p.track_id: p.posture.value for p in pose} if pose is not None else {}
+    activities = (
+        {e.track_id: [o.activity.value for o in e] for e in activity}
+        if activity is not None
+        else {}
+    )
+    zones = {e.track_id: list(e.zone_names) for e in spatial} if spatial is not None else {}
+
+    entities = []
+    if state is not None:
+        for entity in state:
+            entities.append(
+                {
+                    "entity_id": entity.entity_id,
+                    "label": entity.label,
+                    "motion": entity.motion.value,
+                    "speed": round(entity.speed, 3),
+                    "posture": postures.get(entity.track_id),
+                    "activities": activities.get(entity.track_id, []),
+                    "zones": zones.get(entity.track_id, []),
+                }
+            )
+
+    return LiveSnapshot(
+        frame_index=frame.index,
+        captured_at=frame.capture_wall,
+        entities=tuple(entities),
+        events=tuple(
+            {
+                "timestamp": event.capture_wall,
+                "severity": event.severity.value,
+                "summary": event.summary,
+                "rule": event.rule,
+                "zone": event.zone,
+            }
+            for event in (events or ())
+        ),
+        stats={
+            "fps": round(stats.delivery_fps, 1),
+            "dropped": stats.frames_dropped,
+            "source": stats.source_id,
+        },
+        health=(stage_registry.to_dict() if stage_registry is not None else {}),
     )
 
 

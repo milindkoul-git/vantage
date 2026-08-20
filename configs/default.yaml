@@ -261,6 +261,27 @@ storage:
   # logged as an ERROR, because each one is the output of a rule that already
   # decided it was worth someone's attention.
 
+dashboard:
+  # A local web dashboard: live view, current entities, and searchable history.
+  # OFF by default; --dashboard turns it on. Built on the standard library -
+  # http.server, MJPEG and one self-contained HTML file - so it adds no
+  # dependencies and needs no build step.
+  enabled: false
+  host: 127.0.0.1     # LOOPBACK ON PURPOSE - see below
+  port: 8080          # 0 asks the OS for a free port
+  jpeg_quality: 70
+  max_width: 960      # frames are downscaled for the browser
+  #
+  # The host default is a security decision, not a convenience one. This serves
+  # LIVE CAMERA FOOTAGE and stored observations with NO AUTHENTICATION of any
+  # kind. Binding to 0.0.0.0 puts that on the network for anything that can
+  # reach the port. It is allowed - behind a reverse proxy that terminates TLS
+  # and authenticates, that is a legitimate deployment - but it has to be asked
+  # for, and it logs a warning saying exactly what it means.
+  #
+  # Every endpoint is read-only. Pruning and configuration stay on the CLI,
+  # where the operator is by definition the person at the machine.
+
 display:
   enabled: true
   window_name: "Vantage - Ingestion"

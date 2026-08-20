@@ -765,6 +765,45 @@ class StorageConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class DashboardConfig:
+    """The local web dashboard. Off by default; ``--dashboard`` turns it on."""
+
+    enabled: bool = False
+    host: str = "127.0.0.1"
+    """Loopback by default, and deliberately.
+
+    This serves live camera footage and stored observations with **no
+    authentication of any kind**. Binding to 0.0.0.0 puts that on the network
+    for anything that can reach the port; it is allowed, because a deployment
+    behind a reverse proxy is legitimate, but it has to be asked for and it
+    logs a warning saying what it means."""
+
+    port: int = 8080
+    """0 asks the operating system for a free port.
+
+    Useful when embedding or testing, where a fixed port would collide; the
+    chosen one is logged and returned by ``start()``. Not useful for a dashboard
+    a person needs to visit, since they would have to read the log to find it."""
+
+    jpeg_quality: int = 70
+    max_width: int = 960
+    """Frames are downscaled for the browser. A 1080p MJPEG stream is several
+    megabytes a second per viewer for detail nobody is reading on a dashboard."""
+
+    def __post_init__(self) -> None:
+        if not 0 <= self.port <= 65535:
+            raise ConfigError(
+                f"dashboard.port must be in 0..65535 (0 = pick one), got {self.port}"
+            )
+        if not 1 <= self.jpeg_quality <= 100:
+            raise ConfigError("dashboard.jpeg_quality must be in 1..100")
+        if self.max_width < 64:
+            raise ConfigError("dashboard.max_width must be at least 64")
+        if not self.host.strip():
+            raise ConfigError("dashboard.host must not be empty")
+
+
+@dataclass(frozen=True, slots=True)
 class DisplayConfig:
     """The Phase 1 diagnostic viewer.
 
@@ -885,6 +924,7 @@ class VantageConfig:
     spatial: SpatialConfig = field(default_factory=SpatialConfig)
     events: EventsConfig = field(default_factory=EventsConfig)
     storage: StorageConfig = field(default_factory=StorageConfig)
+    dashboard: DashboardConfig = field(default_factory=DashboardConfig)
     display: DisplayConfig = field(default_factory=DisplayConfig)
 
     def __post_init__(self) -> None:

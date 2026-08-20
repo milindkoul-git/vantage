@@ -1,0 +1,282 @@
+<!DOCTYPE html>
+<!--
+  The whole dashboard: markup, style and behaviour in one file.
+
+  No build step and no framework, which is not minimalism for its own sake. A
+  build step means a toolchain that has to be installed, kept current and
+  packaged into the executable; a framework means a dependency tree for a page
+  with four panels. Everything here is what a browser already does.
+
+  Live video arrives as MJPEG in a plain <img>, so the browser handles the
+  streaming and there is no WebSocket to keep alive or reconnect.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Vantage</title>
+<style>
+  :root {
+    --bg: #10131a; --panel: #171b25; --line: #232838;
+    --text: #e6e9f0; --dim: #8b93a7;
+    --info: #5b9bd5; --notice: #e0a458; --alert: #e05a5a; --ok: #5fc27e;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 14px/1.5 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  header {
+    display: flex; align-items: baseline; gap: 16px;
+    padding: 12px 20px; border-bottom: 1px solid var(--line); background: var(--panel);
+  }
+  header h1 { font-size: 16px; margin: 0; font-weight: 600; letter-spacing: .02em; }
+  header .meta { color: var(--dim); font-size: 12px; }
+  #status { margin-left: auto; font-size: 12px; color: var(--dim); }
+  #status.live { color: var(--ok); }
+  #status.stale { color: var(--notice); }
+
+  main {
+    display: grid; gap: 16px; padding: 16px;
+    grid-template-columns: minmax(320px, 2fr) minmax(280px, 1fr);
+  }
+  @media (max-width: 900px) { main { grid-template-columns: 1fr; } }
+
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; }
+  .panel h2 {
+    margin: 0; padding: 10px 14px; font-size: 12px; font-weight: 600;
+    text-transform: uppercase; letter-spacing: .08em; color: var(--dim);
+    border-bottom: 1px solid var(--line);
+  }
+  .panel .body { padding: 12px 14px; }
+  .panel .body.flush { padding: 0; }
+
+  #view { width: 100%; display: block; background: #000; border-radius: 0 0 8px 8px; }
+  #noview { padding: 40px 14px; text-align: center; color: var(--dim); }
+
+  table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+  th {
+    text-align: left; font-weight: 500; font-size: 11px; color: var(--dim);
+    text-transform: uppercase; letter-spacing: .06em;
+    padding: 8px 14px; border-bottom: 1px solid var(--line);
+  }
+  td { padding: 7px 14px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  tr:last-child td { border-bottom: none; }
+  .time { color: var(--dim); white-space: nowrap; }
+  .sev { font-size: 11px; font-weight: 600; text-transform: uppercase; white-space: nowrap; }
+  .sev.info { color: var(--info); }
+  .sev.notice { color: var(--notice); }
+  .sev.alert { color: var(--alert); }
+  .entity { color: var(--dim); }
+  .empty { padding: 24px 14px; color: var(--dim); text-align: center; }
+
+  .controls { display: flex; gap: 8px; flex-wrap: wrap; padding: 10px 14px; border-bottom: 1px solid var(--line); }
+  select, button {
+    background: #10131a; color: var(--text); border: 1px solid var(--line);
+    border-radius: 5px; padding: 5px 9px; font: inherit; font-size: 12px;
+  }
+  button { cursor: pointer; }
+  button:hover { border-color: #38405a; }
+
+  .pill { display: inline-block; padding: 1px 7px; border-radius: 999px;
+          background: #10131a; border: 1px solid var(--line); font-size: 11px; color: var(--dim); }
+  .warn { color: var(--notice); }
+  footer { padding: 10px 20px 24px; color: var(--dim); font-size: 11px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Vantage</h1>
+  <span class="meta" id="camera">-</span>
+  <span class="meta" id="store">-</span>
+  <span id="status">connecting</span>
+</header>
+
+<main>
+  <section class="panel">
+    <h2>Live</h2>
+    <div class="body flush">
+      <img id="view" alt="Live view" hidden>
+      <div id="noview">No live feed. Start one with <code>vantage run --dashboard</code>.</div>
+    </div>
+  </section>
+
+  <section class="panel">
+    <h2>Entities now</h2>
+    <div class="body flush"><div id="entities" class="empty">nothing tracked</div></div>
+  </section>
+
+  <section class="panel" style="grid-column: 1 / -1;">
+    <h2>Events</h2>
+    <div class="controls">
+      <select id="since">
+        <option value="">live only</option>
+        <option value="15m">last 15m</option>
+        <option value="1h" selected>last hour</option>
+        <option value="6h">last 6h</option>
+        <option value="24h">last 24h</option>
+        <option value="7d">last 7d</option>
+      </select>
+      <select id="severity">
+        <option value="">all severities</option>
+        <option value="alert">alerts only</option>
+        <option value="notice">notice and above</option>
+      </select>
+      <button id="refresh">Refresh</button>
+      <span class="pill" id="eventcount">-</span>
+    </div>
+    <div class="body flush"><div id="events" class="empty">loading</div></div>
+  </section>
+</main>
+
+<footer>
+  Local dashboard, no authentication. Bound to loopback unless started with
+  <code>--dashboard-host</code>.
+</footer>
+
+<script>
+"use strict";
+
+const $ = (id) => document.getElementById(id);
+const clock = (ts) => new Date(ts * 1000).toLocaleTimeString();
+
+// Polling rather than WebSockets. The live *picture* is already pushed by MJPEG,
+// so this only carries a small JSON snapshot; a socket would add reconnect
+// handling and a second transport to earn a second of latency nobody notices.
+const LIVE_MS = 1000;
+const HISTORY_MS = 10000;
+
+async function getJSON(url) {
+  const response = await fetch(url, { cache: "no-store" });
+  if (!response.ok) throw new Error(`${response.status} ${response.statusText}`);
+  return response.json();
+}
+
+function setStatus(text, kind) {
+  const el = $("status");
+  el.textContent = text;
+  el.className = kind || "";
+}
+
+function renderEntities(entities) {
+  const host = $("entities");
+  if (!entities || entities.length === 0) {
+    host.className = "empty";
+    host.textContent = "nothing tracked";
+    return;
+  }
+  host.className = "";
+  const rows = entities.map((e) => `
+    <tr>
+      <td>${escapeHtml(e.entity_id)}</td>
+      <td class="entity">${escapeHtml(e.label || "")}</td>
+      <td>${escapeHtml([e.motion, e.posture, (e.activities || []).join(", ")]
+            .filter(Boolean).join(" &middot; "))}</td>
+      <td class="entity">${escapeHtml((e.zones || []).join(", "))}</td>
+    </tr>`).join("");
+  host.innerHTML = `<table><thead><tr>
+      <th>Entity</th><th>Type</th><th>Doing</th><th>Where</th>
+    </tr></thead><tbody>${rows}</tbody></table>`;
+}
+
+function renderEvents(events, note) {
+  const host = $("events");
+  if (!events || events.length === 0) {
+    host.className = "empty";
+    host.textContent = note || "no events";
+    return;
+  }
+  host.className = "";
+  const rows = events.map((e) => `
+    <tr>
+      <td class="time">${clock(e.timestamp)}</td>
+      <td class="sev ${escapeHtml(e.severity)}">${escapeHtml(e.severity)}</td>
+      <td>${escapeHtml(e.summary)}</td>
+      <td class="entity">${escapeHtml(e.zone || "")}</td>
+      <td class="entity">${escapeHtml(e.rule)}</td>
+    </tr>`).join("");
+  host.innerHTML = `<table><thead><tr>
+      <th>Time</th><th>Severity</th><th>What</th><th>Zone</th><th>Rule</th>
+    </tr></thead><tbody>${rows}</tbody></table>`;
+}
+
+function escapeHtml(value) {
+  // Entity ids and zone names come from configuration and from model labels.
+  // Neither is attacker-controlled in a normal deployment, but they are still
+  // data being put into markup, and escaping data is not conditional on who
+  // wrote it.
+  return String(value ?? "").replace(/[&<>"']/g, (c) => ({
+    "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
+  })[c]);
+}
+
+async function pollLive() {
+  try {
+    const live = await getJSON("/api/live");
+    if (!live.available) {
+      setStatus(live.reason || "history only", "");
+      renderEntities([]);
+      return;
+    }
+    if (live.has_frame && $("view").hidden) {
+      // Started only once a frame exists, so a browser does not sit on a
+      // stalled stream showing a broken image.
+      $("view").src = "/stream.mjpg";
+      $("view").hidden = false;
+      $("noview").hidden = true;
+    }
+    const stale = live.age_s > 3;
+    setStatus(stale ? `stale ${live.age_s.toFixed(0)}s` : `live · frame ${live.frame_index}`,
+              stale ? "stale" : "live");
+    renderEntities(live.entities);
+    if ($("since").value === "") renderEvents(live.events, "no events yet");
+  } catch (err) {
+    setStatus("disconnected", "stale");
+  }
+}
+
+async function loadHistory() {
+  const since = $("since").value;
+  if (since === "") { $("eventcount").textContent = "live"; return; }
+  try {
+    const params = new URLSearchParams({ since, limit: "100" });
+    if ($("severity").value) params.set("severity", $("severity").value);
+    const data = await getJSON(`/api/events?${params}`);
+    if (!data.available) {
+      renderEvents([], data.reason);
+      $("eventcount").textContent = "no store";
+      return;
+    }
+    renderEvents(data.events, "nothing recorded in this window");
+    $("eventcount").textContent = `${data.count} shown`;
+  } catch (err) {
+    renderEvents([], `could not load history: ${err.message}`);
+  }
+}
+
+async function loadStats() {
+  try {
+    const stats = await getJSON("/api/stats");
+    $("camera").textContent = stats.camera_id;
+    if (stats.store) {
+      const mb = (stats.store.bytes || 0) / 1e6;
+      $("store").textContent =
+        `${stats.store.events.toLocaleString()} events · ` +
+        `${stats.store.observations.toLocaleString()} observations · ${mb.toFixed(1)} MB`;
+    } else {
+      $("store").innerHTML = '<span class="warn">not recording (start with --store)</span>';
+    }
+  } catch (err) { /* header detail is cosmetic; the panels report their own errors */ }
+}
+
+$("refresh").addEventListener("click", loadHistory);
+$("since").addEventListener("change", loadHistory);
+$("severity").addEventListener("change", loadHistory);
+
+pollLive(); loadHistory(); loadStats();
+setInterval(pollLive, LIVE_MS);
+setInterval(loadHistory, HISTORY_MS);
+setInterval(loadStats, HISTORY_MS);
+</script>
+</body>
+</html>

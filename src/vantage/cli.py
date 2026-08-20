@@ -170,6 +170,17 @@ def build_parser() -> argparse.ArgumentParser:
         help="drop the five head landmarks (nose, eyes, ears) before they are constructed",
     )
     run.add_argument(
+        "--dashboard",
+        action="store_true",
+        help="serve a local web dashboard with a live view (loopback only)",
+    )
+    run.add_argument("--dashboard-port", type=int, default=None)
+    run.add_argument(
+        "--dashboard-host",
+        default=None,
+        help="bind address; anything but 127.0.0.1 exposes the camera feed unauthenticated",
+    )
+    run.add_argument(
         "--store",
         action="store_true",
         help="persist observations and events to a SQLite file (off by default)",
@@ -309,6 +320,15 @@ def build_parser() -> argparse.ArgumentParser:
     )
     spatial.add_argument("--json", action="store_true")
 
+    dashboard = sub.add_parser(
+        "dashboard",
+        parents=[common],
+        help="serve the dashboard against a stored history, with no live view",
+    )
+    dashboard.add_argument("--db", default=None, help="store path (default: storage.path)")
+    dashboard.add_argument("--port", type=int, default=None)
+    dashboard.add_argument("--host", default=None)
+
     history = sub.add_parser(
         "history", parents=[common], help="query the stored observations and events"
     )
@@ -409,6 +429,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             return _cmd_events(args)
         if command == "history":
             return _cmd_history(args)
+        if command == "dashboard":
+            return _cmd_dashboard(args)
         if command == "discover":
             return _cmd_discover(args)
         # No return after this: parser.error() exits the process, so anything
@@ -712,6 +734,34 @@ def _cmd_discover(args: argparse.Namespace) -> int:
             raise VantageError(f"could not write {args.save}")
         print(f"\nannotated frame -> {args.save}")
 
+    return EXIT_OK
+
+
+def _cmd_dashboard(args: argparse.Namespace) -> int:
+    """Serve the dashboard against a store, with no pipeline running."""
+    import dataclasses
+
+    from vantage.config.loader import load_config
+    from vantage.dashboard.factory import build_dashboard
+    from vantage.storage.sqlite_store import SqliteStore
+
+    config = load_config(args.config, overrides=args.overrides)
+    settings = config.dashboard
+    if args.port is not None:
+        settings = dataclasses.replace(settings, port=args.port)
+    if args.host is not None:
+        settings = dataclasses.replace(settings, host=args.host)
+
+    store = SqliteStore(args.db or config.storage.path, read_only=True)
+    server = build_dashboard(settings, store=store, feed=None)
+    url = server.start()
+    print(f"Dashboard: {url}")
+    print("  History only - no pipeline is running, so there is no live view.")
+    print("  Ctrl+C to stop.")
+    try:
+        server.serve_forever()
+    finally:
+        store.close()
     return EXIT_OK
 
 
@@ -1188,6 +1238,8 @@ def _flag_overrides(args: argparse.Namespace) -> list[str]:
         ("tracking.max_lost_s", args.track_max_lost),
         ("pose.model", args.pose_model),
         ("storage.path", args.store_path),
+        ("dashboard.port", args.dashboard_port),
+        ("dashboard.host", args.dashboard_host),
         ("pose.interval", args.pose_interval),
         ("pose.max_persons", args.pose_max_persons),
         # The logging flags must go through the config too, or the reload inside
@@ -1228,6 +1280,8 @@ def _flag_overrides(args: argparse.Namespace) -> list[str]:
         overrides.append("events.enabled=false")
     if args.store:
         overrides.append("storage.enabled=true")
+    if args.dashboard:
+        overrides.append("dashboard.enabled=true")
     if args.track or args.pose:
         # --track implies --detect rather than erroring, because a tracker with
         # no detector cannot do anything at all; requiring both flags would be
@@ -1311,7 +1365,25 @@ def _acceleration_report() -> dict[str, object]:
         report["onnxruntime"] = onnxruntime.__version__
         report["onnx_providers"] = ", ".join(onnxruntime.get_available_providers())
     except ImportError:
-        report["onnxruntime"] = "not installed (candidate runtime for Phase 2)"
+        report["onnxruntime"] = "not installed (install with the 'detect' extra)"
+
+    # OpenVINO was missing from this report entirely, which was noticed only
+    # when checking whether a packaged build had lost it. It is the backend that
+    # actually reaches the Intel iGPU, so a setup check that omitted it was
+    # omitting the one line someone diagnosing "why is this on the CPU" needs.
+    try:
+        import openvino
+
+        report["openvino"] = openvino.__version__
+        try:
+            devices = openvino.Core().available_devices
+            report["openvino_devices"] = ", ".join(devices) or "none"
+        except Exception as exc:
+            # A present runtime that cannot enumerate devices is a different
+            # and more interesting state than an absent one.
+            report["openvino_devices"] = f"enumeration failed: {type(exc).__name__}"
+    except ImportError:
+        report["openvino"] = "not installed (install with the 'detect' extra)"
 
     return report
 
