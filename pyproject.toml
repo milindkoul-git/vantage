@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "vantage"
-version = "0.10.0"
-description = "Modular intelligent video analytics platform - ingestion, detection, tracking, pose, activity, spatial reasoning, events, storage, dashboard and optional identity"
+version = "0.11.0"
+description = "Modular intelligent video analytics platform - ingestion, detection, tracking, pose, activity, spatial reasoning, events, storage, dashboard, optional identity and historical analytics"
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }
