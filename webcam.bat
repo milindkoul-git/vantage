@@ -13,7 +13,7 @@ REM      webcam.bat plain      detection only, no tracking and no pose
 REM      webcam.bat identity   tracking plus face identification (opt-in)
 REM      webcam.bat enroll     add a person to the identity gallery
 REM      webcam.bat who        list who is enrolled
-REM      webcam.bat checks     no camera: score the tracker and activity rules
+REM      webcam.bat checks     no camera: score tracker, activity and spatial
 REM
 REM  The detection modes use different detectors on purpose, and the reason is
 REM  measured rather than assumed. Pose costs about 5 ms per person on the
@@ -233,19 +233,23 @@ REM activity rules and then fail on the tracker - a half-success that reads as
 REM a bug in the tool. Per-harness flags belong on the harness.
 if not "%ARGS%"=="" (
     echo.
-    echo   'checks' takes no arguments, because it runs two harnesses whose
+    echo   'checks' takes no arguments, because it runs three harnesses whose
     echo   scenario names differ. Run one directly instead:
     echo.
     echo       .venv\Scripts\python.exe -m vantage activity eval%ARGS%
+    echo       .venv\Scripts\python.exe -m vantage spatial eval%ARGS%
     echo       .venv\Scripts\python.exe -m vantage track eval%ARGS%
     echo.
     set "RESULT=2"
     goto finish
 )
-echo [checks] scoring the tracker and the activity rules against ground truth
+echo [checks] scoring the tracker, activity rules and spatial geometry
 echo.
 "%PYTHON%" -m vantage activity eval
 set "RESULT=%ERRORLEVEL%"
+echo.
+"%PYTHON%" -m vantage spatial eval
+if not "%ERRORLEVEL%"=="0" set "RESULT=%ERRORLEVEL%"
 echo.
 "%PYTHON%" -m vantage track eval
 if not "%ERRORLEVEL%"=="0" set "RESULT=%ERRORLEVEL%"

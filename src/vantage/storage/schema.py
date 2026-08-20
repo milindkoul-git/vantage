@@ -16,7 +16,7 @@ be added then without touching anything that writes.
 
 Migrations, from the first version
 -----------------------------------
-There is one version now and a ``schema_version`` table to record it. That looks
+There are two versions now and a ``schema_version`` table to record it. That looks
 like ceremony for a schema nobody has changed yet, and it is exactly the thing
 that is impossible to add later: by the time a migration is needed there are
 databases in the field with no version marker, and no way to tell what shape
@@ -38,7 +38,7 @@ import sqlite3
 
 from vantage.core.errors import VantageError
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 DELIMITER = ","
 """Wraps every element of a denormalised list column.
@@ -91,6 +91,11 @@ CREATE TABLE IF NOT EXISTS observations (
 _INDEXES = """
 -- Time is the first filter in essentially every query, and it is also what
 -- retention prunes on, so both paths want it.
+CREATE TABLE IF NOT EXISTS heartbeat (
+    camera_id TEXT NOT NULL,
+    timestamp REAL NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_events_time ON events (timestamp);
 CREATE INDEX IF NOT EXISTS idx_observations_time ON observations (timestamp);
 
@@ -101,6 +106,7 @@ CREATE INDEX IF NOT EXISTS idx_events_entity ON events (entity_id, timestamp);
 CREATE INDEX IF NOT EXISTS idx_events_severity ON events (severity, timestamp);
 CREATE INDEX IF NOT EXISTS idx_events_rule ON events (rule, timestamp);
 CREATE INDEX IF NOT EXISTS idx_observations_entity ON observations (entity_id, timestamp);
+CREATE INDEX IF NOT EXISTS idx_heartbeat_time ON heartbeat (timestamp);
 """
 
 _PRAGMAS = (
@@ -172,7 +178,26 @@ def _migrate(connection: sqlite3.Connection, from_version: int, now: float) -> N
     schema that has never changed. The dispatch exists so the first real change
     adds a function rather than an architecture.
     """
-    steps: dict[int, str] = {}
+    steps: dict[int, str] = {
+        # v2: the heartbeat table.
+        #
+        # Analytics needs to tell "nobody was there" apart from "nothing was
+        # recording", and no arrangement of the observation rows can settle it:
+        # an office with a nine-hour overnight quiet period and an office whose
+        # recorder died at 21:00 produce byte-identical tables. Inferring it from
+        # neighbouring buckets works for short gaps and cannot work for long
+        # ones, because the honest answer is that the rows do not contain it.
+        #
+        # A row saying "this camera was alive at this moment" does contain it,
+        # and it costs one insert a minute.
+        2: """
+        CREATE TABLE IF NOT EXISTS heartbeat (
+            camera_id TEXT NOT NULL,
+            timestamp REAL NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_heartbeat_time ON heartbeat (timestamp);
+        """,
+    }
     for version in range(from_version + 1, SCHEMA_VERSION + 1):
         statement = steps.get(version)
         if statement is None:

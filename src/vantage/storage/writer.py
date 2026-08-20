@@ -68,6 +68,11 @@ class StoreWriter:
         self._batch_size = batch_size
         self._flush_interval_s = flush_interval_s
         self._observations: queue.Queue[Any] = queue.Queue(maxsize=observation_queue)
+        # Heartbeats get their own small queue. One a minute cannot fill it, and
+        # keeping them out of the observation queue means a scene busy enough to
+        # drop observations still records that the camera was alive - which is
+        # exactly when knowing that matters.
+        self._heartbeats: queue.Queue[Any] = queue.Queue(maxsize=256)
         self._events: queue.Queue[Any] = queue.Queue(maxsize=event_queue)
         self._stats = WriteStats()
         self._lock = threading.Lock()
@@ -117,6 +122,20 @@ class StoreWriter:
             self._stats.events_queued += 1
         return True
 
+    def add_heartbeat(self, record: dict[str, Any]) -> bool:
+        """Queue one liveness marker. Dropped silently when full.
+
+        Silent is right here and nowhere else in this file: heartbeats are
+        redundant by design - one every minute, and analytics needs only enough
+        of them to establish that a bucket was covered - so a lost one costs
+        nothing and a log line about it would be pure noise.
+        """
+        try:
+            self._heartbeats.put_nowait(record)
+            return True
+        except queue.Full:
+            return False
+
     def add_observation(self, record: dict[str, Any]) -> bool:
         """Queue one observation. Returns whether it was accepted."""
         try:
@@ -152,26 +171,27 @@ class StoreWriter:
         last_flush = time.monotonic()
         events: list[dict[str, Any]] = []
         observations: list[dict[str, Any]] = []
+        heartbeats: list[dict[str, Any]] = []
 
         while True:
-            stop = self._drain(events, observations)
+            stop = self._drain(events, observations, heartbeats)
             now = time.monotonic()
             full = len(events) + len(observations) >= self._batch_size
             due = (now - last_flush) >= self._flush_interval_s
 
-            if (events or observations) and (full or due or stop):
-                self._flush(events, observations)
+            if (events or observations or heartbeats) and (full or due or stop):
+                self._flush(events, observations, heartbeats)
                 last_flush = now
             if stop:
                 # One more pass: records may have arrived between the sentinel
                 # being queued and the queues being drained.
-                self._drain(events, observations)
-                self._flush(events, observations)
+                self._drain(events, observations, heartbeats)
+                self._flush(events, observations, heartbeats)
                 return
             if not full:
                 time.sleep(0.01)
 
-    def _drain(self, events: list, observations: list) -> bool:
+    def _drain(self, events: list, observations: list, heartbeats: list) -> bool:
         """Move everything currently queued into the batches. True to stop."""
         stop = False
         while True:
@@ -192,16 +212,23 @@ class StoreWriter:
                 stop = True
                 continue
             observations.append(item)
+        while True:
+            try:
+                heartbeats.append(self._heartbeats.get_nowait())
+            except queue.Empty:
+                break
         return stop or self._closing.is_set()
 
-    def _flush(self, events: list, observations: list) -> None:
-        if not events and not observations:
+    def _flush(self, events: list, observations: list, heartbeats: list) -> None:
+        if not events and not observations and not heartbeats:
             return
         try:
             written_events = self._store.write_events(events) if events else 0
             written_observations = (
                 self._store.write_observations(observations) if observations else 0
             )
+            if heartbeats:
+                self._store.write_heartbeats(heartbeats)
         except Exception as exc:
             with self._lock:
                 self._stats.write_errors += 1
@@ -231,6 +258,7 @@ class StoreWriter:
         finally:
             events.clear()
             observations.clear()
+            heartbeats.clear()
 
     def flush(self, timeout_s: float = 5.0) -> bool:
         """Block until the queues are empty. For tests and for shutdown."""

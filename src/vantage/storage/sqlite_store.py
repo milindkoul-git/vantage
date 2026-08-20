@@ -154,6 +154,32 @@ class SqliteStore:
         ]
         return self._insert("observations", _OBSERVATION_COLUMNS, rows)
 
+    def write_heartbeats(self, records: list[dict[str, Any]]) -> int:
+        """Record that a camera was alive at these moments.
+
+        The cheapest row in the schema, and the one that makes analytics
+        honest: without it, an empty hour is indistinguishable from an hour the
+        recorder spent dead, and no amount of cleverness over the observation
+        rows can recover the difference.
+        """
+        if not records:
+            return 0
+        rows = [(r["camera_id"], float(r["timestamp"])) for r in records]
+        return self._insert("heartbeat", ("camera_id", "timestamp"), rows)
+
+    def heartbeats(self, since: float, until: float) -> list[float]:
+        """Every heartbeat timestamp in a window, ascending."""
+        rows = (
+            self._require()
+            .execute(
+                "SELECT timestamp FROM heartbeat WHERE timestamp >= ? AND timestamp < ? "
+                "ORDER BY timestamp",
+                (since, until),
+            )
+            .fetchall()
+        )
+        return [float(row["timestamp"]) for row in rows]
+
     def _insert(self, table: str, columns: tuple[str, ...], rows: list[tuple]) -> int:
         connection = self._require()
         placeholders = ", ".join("?" for _ in columns)
@@ -257,7 +283,10 @@ class SqliteStore:
         removed: dict[str, int] = {}
         connection.execute("BEGIN")
         try:
-            for table in ("observations", "events"):
+            # Heartbeats are pruned with everything else. They are tiny, but
+            # one a minute is half a million rows a year, and a table that only
+            # the retention policy forgot is the one that fills the disk.
+            for table in ("observations", "events", "heartbeat"):
                 cursor = connection.execute(
                     f"DELETE FROM {table} WHERE timestamp < ?", (before,)
                 )

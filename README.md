@@ -3,9 +3,9 @@
 A modular platform for understanding what happens in video over time — not just what
 appears in a single frame.
 
-**Status: Phases 1-10 complete** — ingestion, detection, tracking, pose, activity,
-spatial reasoning, events, storage, dashboard, and identity. Advanced analytics (11) and
-multi-camera scaling (12) remain. Each phase was built, verified and closed out on its
+**Status: Phases 1-11 complete** — ingestion, detection, tracking, pose, activity,
+spatial reasoning, events, storage, dashboard, identity, and historical analytics.
+Multi-camera scaling (12) remains. Each phase was built, verified and closed out on its
 own before the next began. Nothing in this repository is mocked or stubbed: what is here
 works, and what is not here is absent rather than faked.
 
@@ -549,6 +549,116 @@ enrol two people and find the system confusing them, raise `identity.threshold`
 and `identity.margin` — and validate on your own footage before trusting either.
 
 **887 tests**, 864 of which need no camera, no model file and no inference
+runtime.
+
+---
+
+## 2l. What Phase 11 delivers
+
+Analytics over accumulated history: what usually happens here, and whether the
+last day looked like it. Nothing in this phase runs in the live pipeline - it
+reads the Phase 8 store, so it can be pointed at a database while the camera is
+running, or at one copied off the machine entirely.
+
+```bash
+vantage analytics summary --db vantage.db --since 7d
+vantage analytics anomalies --since 24h --metric entities
+vantage analytics series --since 24h --interval 15m --json
+vantage analytics eval             # score against histories with known answers
+vantage analytics characterise     # measure false alarms and detection power
+```
+
+**Aggregation happens in SQL.** A month of observations is millions of rows whose
+only use here is to be counted; fetching them to count them in Python would move
+tens of megabytes to produce a few hundred numbers. Bucketing is a `GROUP BY` on
+an integer division, which leaves the timestamp range scan on its index. Only
+bucket *labelling* - which hour of which weekday - happens in Python, because
+SQLite's `localtime` reads the process timezone and gets daylight saving wrong at
+exactly the boundary that matters.
+
+### Median and MAD, not mean and standard deviation
+
+The textbook answer fails here in the way that makes anomaly detection useless:
+it is destroyed by the events it exists to find. A corridor that normally sees 3
+people an hour, visited once by a group of 40, ends up with a band *wider than
+the anomaly that produced it*. Having seen one unusual event, the detector has
+taught itself that unusual events are normal, and it will never fire again.
+
+The median and the median absolute deviation tolerate half the samples being
+contaminated before they move at all. A detector that quietly stops detecting is
+worse than no detector, because it looks like good news.
+
+### Three defects the harness found, and one it could not
+
+This phase produced a working detector three times, and twice the harness was
+lying.
+
+**The spread estimate was low by a factor of 2.7.** With four weeks of history a
+slot has four samples, and the MAD of four numbers is biased low - compounded by
+the centre being fitted to those same four points. A nominal 3.5-sigma band was
+really a 2.3-sigma one. Fixed with a small-sample correction measured directly
+against known normal data rather than cited from a table.
+
+**The relative spread floor was the binding constraint on every slot.** At 15% of
+centre it exceeded the real spread of all well-behaved data, so it - not the
+evidence - set every band. Four weeks and fifty-two weeks of training produced
+*identical* results: accumulating history bought literally nothing. Now 2%, where
+it guards the degenerate case it was meant for and nothing else.
+
+**Structural zeros halved the pooled estimate.** An office is empty nine hours a
+day, and those residuals are all exactly zero. Including them put 37% zeros into
+a median that was supposed to describe how much the camera varies.
+
+And the one a pass/fail suite structurally cannot find: **the scenario harness
+reported zero false positives while the detector was producing about ten false
+alarms a week on realistic data.** Its jitter was deterministic and bounded, and
+real counts have tails. `vantage analytics characterise` exists because of this -
+it draws from a distribution with real tails, plants nothing, and counts what
+gets flagged anyway.
+
+### Measured behaviour
+
+Reproduce with `vantage analytics characterise`. Four weeks of history, 20 seeds,
+counts drawn with variance proportional to the mean:
+
+| | Result |
+|---|---|
+| False alarms on clean data | **0.09 per week** (worst week 0.5) |
+| Detected at +40% above normal | 15% |
+| Detected at +60% above normal | **65%** |
+| Detected at +80% above normal | **95%** |
+| Detected at +100% above normal | 100% |
+
+Roughly: one false alarm every eleven weeks, catching most things half again as
+busy as usual and nearly everything twice as busy. Smaller deviations are not
+detectable from four weeks of history, and the tool does not pretend otherwise.
+
+### The heartbeat, and why the schema changed
+
+An hour with no rows means either "nobody was there" or "nothing was recording".
+The two demand opposite handling - the first is data worth learning from, the
+second is a gap that must never be learned as normal - and **no arrangement of
+the observation rows can tell them apart.** An office with a nine-hour overnight
+quiet period and an office whose recorder died at 21:00 produce byte-identical
+tables.
+
+Inferring it from neighbouring buckets works for short gaps and cannot work for
+long ones. Before this was solved, every always-empty hour accumulated zero
+training samples, so its slot was never learned, so **somebody walking through at
+3am could never be flagged** - the most valuable thing overnight analytics could
+report was structurally unreachable.
+
+So the store gained a `heartbeat` table (schema version 2, migrated
+automatically): one row a minute saying this camera was alive, written whether or
+not anything was seen. On a real database that took coverage from 60% to 100%,
+slots learned from 102/168 to 168/168, and made the 3am case detectable at a
+score of 153.
+
+The heartbeat is emitted from the recorder when a frame completes, not from a
+timer thread, so its presence is evidence the pipeline was *working* rather than
+evidence a thread was still scheduled.
+
+**940 tests**, 917 of which need no camera, no model file and no inference
 runtime.
 
 ---
@@ -1884,8 +1994,19 @@ than assumed.
 
 ## 8. Known limitations
 
-**Scope.** No multi-camera orchestration, no cross-camera re-identification, and no
-advanced analytics (phases 11-12). By design.
+**Scope.** No multi-camera orchestration and no cross-camera re-identification. That is
+phase 12.
+
+**Analytics needs about four weeks of history before it can say anything.** Below three
+observed samples, a slot is not judged at all, and the run reports how many buckets it
+declined rather than presenting an unexamined window as a clean one. It detects deviations
+of roughly +60% and larger; smaller ones are not recoverable from four weeks of data, and
+the tool says so instead of guessing.
+
+**Analytics cannot resolve gaps in databases older than the heartbeat table.** Stores
+recorded before schema version 2 fall back to inferring coverage from neighbouring buckets,
+which works for gaps of an hour or two and cannot resolve a long overnight quiet period.
+Those hours stay unjudged, which is the honest answer rather than a wrong one.
 
 **Identity discrimination is unverified.** Face recognition here has been tested for
 robustness - one face against itself, mirrored, dimmed and half-resolution - but never
@@ -2109,7 +2230,7 @@ not a fixed plan:
 | 8 | Observation & event storage | Done |
 | 9 | Visualization / dashboard | Done |
 | 10 | Identity & enrolment | Done - optional, off by default |
-| 11 | Advanced analytics | |
+| 11 | Advanced analytics | Done |
 | 12 | Optimization / multi-camera scaling | |
 
 ### Identity, as built

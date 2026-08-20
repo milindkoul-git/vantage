@@ -325,6 +325,69 @@ def build_parser() -> argparse.ArgumentParser:
     )
     spatial.add_argument("--json", action="store_true")
 
+    analytics = sub.add_parser(
+        "analytics",
+        parents=[common],
+        help="aggregate stored history, learn what is normal, and find what is not",
+    )
+    analytics.add_argument(
+        "action",
+        choices=["summary", "series", "anomalies", "eval", "characterise"],
+        nargs="?",
+        default="summary",
+        help=(
+            "summary: what happened, in sentences; series: the buckets; "
+            "anomalies: what did not fit; eval: score against known answers; "
+            "characterise: measure false-alarm rate and detection power"
+        ),
+    )
+    analytics.add_argument("--db", default="vantage.db", help="observation store to read")
+    analytics.add_argument(
+        "--metric",
+        default="entities",
+        help="entities, observations, events, mean_speed or moving_fraction",
+    )
+    analytics.add_argument("--since", default="7d", help="window to examine, e.g. 24h or 7d")
+    analytics.add_argument("--interval", default="1h", help="bucket width, e.g. 15m or 1h")
+    analytics.add_argument(
+        "--train",
+        default="4w",
+        help="how much history *before* the window to learn normal from",
+    )
+    analytics.add_argument(
+        "--period",
+        type=int,
+        default=168,
+        choices=[24, 168],
+        help="168: normal varies by day of week; 24: only by hour of day",
+    )
+    analytics.add_argument("--sensitivity", type=float, default=3.5)
+    analytics.add_argument("--camera", default=None)
+    analytics.add_argument("--zone", default=None)
+    analytics.add_argument(
+        "--self-compare",
+        action="store_true",
+        help=(
+            "learn normal from the window being examined rather than from earlier "
+            "history. Use when there is no earlier history; note that a large "
+            "anomaly also shifts what it is compared against"
+        ),
+    )
+    analytics.add_argument(
+        "--judge-empty",
+        action="store_true",
+        help=(
+            "treat empty buckets as 'nobody was there' rather than 'not recording'. "
+            "Turns a camera going dark into a below-baseline anomaly"
+        ),
+    )
+    analytics.add_argument("--trials", type=int, default=20, help="characterise: seeds")
+    analytics.add_argument("--weeks", type=int, default=4, help="characterise: history")
+    analytics.add_argument(
+        "--scenarios", default=None, help="eval: comma-separated scenario names"
+    )
+    analytics.add_argument("--json", action="store_true")
+
     identity = sub.add_parser(
         "identity",
         parents=[common],
@@ -468,6 +531,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             return _cmd_history(args)
         if command == "dashboard":
             return _cmd_dashboard(args)
+        if command == "analytics":
+            return _cmd_analytics(args)
         if command == "identity":
             return _cmd_identity(args)
         if command == "discover":
@@ -774,6 +839,12 @@ def _cmd_discover(args: argparse.Namespace) -> int:
         print(f"\nannotated frame -> {args.save}")
 
     return EXIT_OK
+
+
+def _cmd_analytics(args: argparse.Namespace) -> int:
+    from vantage.analytics.cli import run
+
+    return run(args)
 
 
 def _cmd_identity(args: argparse.Namespace) -> int:

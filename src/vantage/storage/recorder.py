@@ -21,6 +21,7 @@ a rule.
 
 from __future__ import annotations
 
+import time
 from typing import TYPE_CHECKING, Any
 
 from vantage.activity.contracts import ActivityResult
@@ -45,13 +46,18 @@ class Recorder:
         camera_id: str = "camera_01",
         observation_interval: int = 15,
         store_observations: bool = True,
+        heartbeat_interval_s: float = 60.0,
     ) -> None:
         if observation_interval < 1:
             raise ValueError("observation_interval must be >= 1")
+        if heartbeat_interval_s <= 0:
+            raise ValueError("heartbeat_interval_s must be positive")
         self._writer = writer
         self._camera_id = camera_id
         self._interval = observation_interval
         self._store_observations = store_observations
+        self._heartbeat_interval_s = heartbeat_interval_s
+        self._last_heartbeat = 0.0
         self._steps = 0
 
     @property
@@ -82,6 +88,8 @@ class Recorder:
                 accepted += self._writer.add_event(self._event_row(event))
 
         self._steps += 1
+        self._beat()
+
         if not self._store_observations or state is None:
             return accepted
         if (self._steps - 1) % self._interval != 0:
@@ -122,6 +130,26 @@ class Recorder:
                 self._observation(entity, postures, activities, zones, names, state)
             )
         return accepted
+
+    def _beat(self) -> None:
+        """Record that this camera is alive, about once a minute.
+
+        Unconditional on there being anything to see, which is the entire point.
+        An empty scene produces no observation rows, so without this the store
+        cannot distinguish an empty room from a dead recorder - and analytics
+        would either learn every outage as normal quiet or refuse to judge any
+        overnight hour at all. One row a minute settles it.
+
+        Emitted from ``record`` rather than from a timer thread so that it means
+        what it says: a heartbeat is written because the pipeline completed a
+        frame, so its presence is evidence the pipeline was actually working
+        rather than evidence a thread was still scheduled.
+        """
+        now = time.time()
+        if now - self._last_heartbeat < self._heartbeat_interval_s:
+            return
+        self._last_heartbeat = now
+        self._writer.add_heartbeat({"camera_id": self._camera_id, "timestamp": now})
 
     def _event_row(self, event: Event) -> dict[str, Any]:
         """One event as database columns.

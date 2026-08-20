@@ -736,9 +736,22 @@ class StorageConfig:
     they are the record of what actually happened. Zero disables pruning, which
     on a long-running camera means the disk fills eventually."""
 
+    heartbeat_interval_s: float = 60.0
+    """How often to record that this camera is alive, in seconds.
+
+    Lives here rather than under ``analytics`` because the recorder is what
+    emits it, even though analytics is what needs it. One row a minute, written
+    whether or not anything was seen - which is the entire point: an empty scene
+    produces no observation rows, so without this the store cannot distinguish
+    an empty room from a dead recorder, and every overnight hour becomes
+    unjudgeable.
+    """
+
     def __post_init__(self) -> None:
         if not self.path.strip():
             raise ConfigError("storage.path must not be empty")
+        if self.heartbeat_interval_s <= 0:
+            raise ConfigError("storage.heartbeat_interval_s must be positive")
         if self.observation_interval < 1:
             raise ConfigError("storage.observation_interval must be >= 1")
         if self.batch_size < 1:
@@ -801,6 +814,45 @@ class DashboardConfig:
             raise ConfigError("dashboard.max_width must be at least 64")
         if not self.host.strip():
             raise ConfigError("dashboard.host must not be empty")
+
+
+@dataclass(frozen=True, slots=True)
+class AnalyticsConfig:
+    """Analytics over stored history. Reads the store; never runs in the pipeline.
+
+    Nothing here affects a live run. These values are the defaults the
+    ``vantage analytics`` command starts from, so that a deployment which has
+    settled on a bucket width or a sensitivity does not have to repeat it on
+    every invocation.
+    """
+
+    interval_s: float = 3600.0
+    period_hours: int = 168
+    """168: normal varies by day of week as well as hour. 24: only by hour."""
+
+    sensitivity: float = 3.5
+    """Robust z-score at which a bucket is called anomalous. Measured behaviour
+    at this value: roughly one false alarm every seven weeks, catching half of
+    all +60% deviations and almost all +80% ones."""
+
+    training_span_s: float = 2419200.0
+    """Four weeks. Gives a weekly baseline four samples per slot."""
+
+    infer_zeros: bool = True
+    zero_reach: int = 2
+    judge_empty: bool = False
+
+    def __post_init__(self) -> None:
+        if self.interval_s <= 0:
+            raise ConfigError("analytics.interval_s must be positive")
+        if self.period_hours not in (24, 168):
+            raise ConfigError("analytics.period_hours must be 24 or 168")
+        if self.sensitivity <= 0:
+            raise ConfigError("analytics.sensitivity must be positive")
+        if self.training_span_s < 0:
+            raise ConfigError("analytics.training_span_s must be >= 0")
+        if self.zero_reach < 1:
+            raise ConfigError("analytics.zero_reach must be >= 1")
 
 
 @dataclass(frozen=True, slots=True)
@@ -987,6 +1039,7 @@ class VantageConfig:
     storage: StorageConfig = field(default_factory=StorageConfig)
     dashboard: DashboardConfig = field(default_factory=DashboardConfig)
     identity: IdentityConfig = field(default_factory=IdentityConfig)
+    analytics: AnalyticsConfig = field(default_factory=AnalyticsConfig)
     display: DisplayConfig = field(default_factory=DisplayConfig)
 
     def __post_init__(self) -> None:
