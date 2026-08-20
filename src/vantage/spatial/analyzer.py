@@ -215,7 +215,8 @@ class SpatialAnalyzer:
 
         for index, first in enumerate(considered):
             for second in considered[index + 1 :]:
-                key = tuple(sorted((first.track_id, second.track_id)))
+                low, high = sorted((first.track_id, second.track_id))
+                key = (low, high)
                 state = self._pairs.get(key)
                 if state is None:
                     state = _PairState(separations=deque(maxlen=self._params.history))

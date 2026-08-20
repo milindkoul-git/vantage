@@ -35,6 +35,7 @@ discover = [
 dev = [
     "pytest>=8.0",
     "ruff>=0.6",   # lint and format; CI gates on both
+    "mypy>=1.11",  # type checking; CI gates on it
 ]
 
 [project.scripts]
@@ -85,6 +86,44 @@ ignore = [
 # Tests reach into private members on purpose, to assert that pruning actually
 # happened rather than that a public count looks right.
 "tests/*" = ["SLF001"]
+
+[tool.mypy]
+files = ["src/vantage"]
+# No python_version pin. Pinning it to the project's floor (3.11) makes mypy
+# parse numpy's bundled stubs under 3.11 rules, where they are a syntax error -
+# they use `type` statements, which are 3.12+. Following the running
+# interpreter avoids checking the language version of someone else's stubs.
+# Third-party wheels here (opencv, openvino, onnxruntime) ship no stubs, and
+# writing stubs for the handful of calls used would be a large amount of code
+# to maintain for very little checking.
+ignore_missing_imports = true
+# Deliberately not --strict. The value at this stage is catching the mistakes a
+# checker is uniquely good at - a name defined twice, a variable rebound to a
+# different type, an Optional dereferenced - and those are all caught here.
+# Requiring annotations everywhere would mostly add noise to numpy-heavy code
+# where the useful type is "an array of some shape".
+warn_redundant_casts = true
+warn_unused_ignores = true
+no_implicit_optional = true
+# warn_unreachable is deliberately off. mypy narrows sys.platform to the
+# platform it is running on, so every correct `if sys.platform == "linux"`
+# branch is "unreachable" when checked on Windows and vice versa. With CI on
+# both, the flag would fail one job or the other for code that is right, and
+# silencing it per-branch is worse: the ignore needed on Windows becomes an
+# unused-ignore error on Linux. It caught one genuine dead statement before
+# being turned off, which is now fixed.
+
+
+# Note: numpy's stubs are deliberately NOT skipped. Skipping them was tried and
+# was actively harmful - without them mypy cannot infer the type of any array
+# expression, which turned one parse error into seventeen "need type
+# annotation" errors across the numeric code. Following the running interpreter
+# rather than pinning python_version is what makes them parse.
+
+[[tool.mypy.overrides]]
+# Tests construct partial objects and reach into private state on purpose.
+module = "tests.*"
+ignore_errors = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

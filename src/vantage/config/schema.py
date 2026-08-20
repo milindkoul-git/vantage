@@ -646,6 +646,42 @@ class DisplayConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class AdaptiveConfig:
+    """Adaptive load shedding, so analysis degrades instead of falling behind.
+
+    Applies to **live sources only**. A recorded file has no deadline - it can
+    be analysed as slowly as it likes and the result is identical - so shedding
+    load there would discard information for nothing.
+    """
+
+    enabled: bool = True
+    headroom: float = 0.7
+    """Fraction of the frame budget analysis may occupy. Not 1.0: decode,
+    overlay and display need the rest, and a target that consumed the whole
+    budget would sit permanently on the edge of dropping frames."""
+
+    max_interval: int = 8
+    """Ceiling on the analysis interval. Past this the tracker's association
+    gaps exceed what its motion model can bridge, so a slow system is the
+    honest outcome rather than a fast one producing nonsense."""
+
+    raise_after_s: float = 1.0
+    lower_after_s: float = 6.0
+    """Much longer than ``raise_after_s`` on purpose: raising early costs a
+    little temporal resolution, lowering early puts the pipeline straight back
+    into the overload it just escaped."""
+
+    def __post_init__(self) -> None:
+        if not 0.0 < self.headroom <= 1.0:
+            raise ConfigError(f"app.adaptive.headroom must be in (0, 1], got {self.headroom}")
+        if self.max_interval < 1:
+            raise ConfigError("app.adaptive.max_interval must be >= 1")
+        for name in ("raise_after_s", "lower_after_s"):
+            if getattr(self, name) < 0:
+                raise ConfigError(f"app.adaptive.{name} must be >= 0")
+
+
+@dataclass(frozen=True, slots=True)
 class AppConfig:
     """Process-level behaviour."""
 
@@ -660,6 +696,8 @@ class AppConfig:
     five in a row is broken, and continuing to call it costs latency on every
     frame and floods the log. Set higher for a flaky source you would rather
     limp along with, lower to fail fast."""
+
+    adaptive: AdaptiveConfig = field(default_factory=AdaptiveConfig)
 
     resource_interval_s: float = 10.0
     """How often to sample process CPU and memory. Zero disables it.
@@ -710,6 +748,15 @@ class VantageConfig:
                 "tracking.enabled requires detection.enabled: the tracker consumes "
                 "detections and has no other source of objects. Enable detection, or "
                 "pass --detect along with --track."
+            )
+        if (
+            self.app.adaptive.enabled
+            and self.app.adaptive.max_interval < self.detection.interval
+        ):
+            raise ConfigError(
+                f"app.adaptive.max_interval ({self.app.adaptive.max_interval}) is below "
+                f"detection.interval ({self.detection.interval}): the governor would be "
+                "asked to shed load below the floor it was told to start at"
             )
         if self.pose.enabled and not self.tracking.enabled:
             raise ConfigError(

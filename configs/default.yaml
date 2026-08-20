@@ -142,6 +142,23 @@ activity:
   # ignore the real one. This is not a certified fall detector; see the
   # limitations in README S8 before relying on it.
 
+# Adaptive load shedding lives under `app:` above. Shown here as a comment
+# because it is nested, and because the strict loader rejects an unknown
+# top-level key - which is how this comment came to exist at all.
+#
+#   app:
+#     adaptive:
+#       enabled: true        # analyse fewer frames well rather than fall behind
+#       headroom: 0.7        # fraction of the frame budget analysis may occupy
+#       max_interval: 8      # ceiling; past this the tracker's gaps get too big
+#       raise_after_s: 1.0   # over budget this long before raising
+#       lower_after_s: 6.0   # under budget this long before lowering
+#
+# LIVE SOURCES ONLY. A recorded file has no deadline, so shedding load there
+# would discard information for nothing; the governor stands down and logs why.
+# Every interval change is logged with its reason, and the run summary reports
+# the peak interval and the time spent degraded.
+
 spatial:
   # Zones and pairwise relations. Needs no model - geometry over the tracks and
   # poses the earlier stages already produce - so it is on whenever tracking is.

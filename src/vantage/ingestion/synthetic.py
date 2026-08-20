@@ -80,6 +80,7 @@ class SyntheticSource(FrameSource):
         frames: int | None = None,
         seed: int = 7,
         objects: int = 4,
+        live: bool = False,
         uri: str = "synthetic://",
         clock: Clock = SYSTEM_CLOCK,
     ) -> None:
@@ -99,6 +100,7 @@ class SyntheticSource(FrameSource):
         self._frames = frames
         self._seed = int(seed)
         self._object_count = int(objects)
+        self._is_live = bool(live)
         self._background: np.ndarray | None = None
         self._motion: list[tuple[float, float, float, float, float, tuple[int, int, int]]] = []
 
@@ -132,7 +134,7 @@ class SyntheticSource(FrameSource):
             declared_fps=self._fps,
             frame_count=self._frames,
             backend="synthetic",
-            is_live=False,
+            is_live=self._is_live,
             extra={"seed": self._seed, "objects": self._object_count},
         )
 

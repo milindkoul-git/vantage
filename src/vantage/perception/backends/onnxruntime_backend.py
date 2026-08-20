@@ -105,4 +105,4 @@ class OnnxRuntimeBackend(InferenceBackend):
     def close(self) -> None:
         # ORT releases native resources when the session is collected; dropping
         # the reference is the supported way to do it.
-        self._session = None  # type: ignore[assignment]
+        self._session = None

@@ -255,7 +255,13 @@ class SpatialResult:
         return tally
 
     def crossings(self) -> tuple[tuple[EntitySpatial, ZoneOccupancy], ...]:
-        """Boundary crossings on this frame - the transient half of zones."""
+        """Boundary crossings on this frame - the transient half of zones.
+
+        Every occupancy returned has a non-``None`` ``event``; that is the
+        filter. Callers still have to narrow it for a type checker, which is
+        worth the small friction: the alternative is a separate type whose only
+        difference is a field that cannot be None.
+        """
         return tuple(
             (entity, zone)
             for entity in self.entities

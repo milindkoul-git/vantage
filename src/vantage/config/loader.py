@@ -159,14 +159,19 @@ def _coerce(annotation: Any, value: Any, path: str) -> Any:
                 f"{path}: expected a list, got {value!r}. "
                 "In YAML use '[person, car]' or a '- item' block."
             )
-        args = get_args(annotation)
+        # get_args returns a tuple; the name is reused from the union branch
+        # above where it held a list. Reflection over annotations is dynamic
+        # by nature and a checker cannot follow it.
+        args = get_args(annotation)  # type: ignore[assignment]
         item_type = args[0] if args else str
         return [
             _coerce(item_type, item, f"{path}[{index}]") for index, item in enumerate(value)
         ]
 
     if dataclasses.is_dataclass(annotation):
-        return _build(annotation, value, path)
+        # is_dataclass narrows to "instance or class"; here it is always the
+        # class, because annotations are types.
+        return _build(annotation, value, path)  # type: ignore[arg-type]
 
     if isinstance(annotation, type) and issubclass(annotation, Enum):
         return _coerce_enum(annotation, value, path)

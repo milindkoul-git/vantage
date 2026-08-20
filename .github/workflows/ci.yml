@@ -55,6 +55,11 @@ jobs:
           ruff check src tests
           ruff format --check src tests
 
+      - name: Type check
+        run: |
+          pip install mypy
+          mypy
+
       - name: Tests
         # Weight-dependent tests deselect themselves; -m selects the rest
         # explicitly so a missing marker cannot silently skip the suite.

@@ -114,7 +114,8 @@ def evaluate(scenario: SpatialScenario, params: SpatialParams | None = None) -> 
                         metrics.unexpected[key] = metrics.unexpected.get(key, 0) + 1
 
         for entity, occupancy in result.crossings():
-            seen_zone_events.add((entity.track_id, occupancy.zone, occupancy.event.value))
+            if occupancy.event is not None:
+                seen_zone_events.add((entity.track_id, occupancy.zone, occupancy.event.value))
 
     metrics.zone_events_found = sum(
         1

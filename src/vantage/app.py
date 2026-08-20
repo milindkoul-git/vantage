@@ -22,6 +22,7 @@ import cv2
 from vantage.config.schema import VantageConfig
 from vantage.core.clock import SYSTEM_CLOCK, Clock
 from vantage.core.frame import Frame
+from vantage.core.governor import GovernorParams, LoadGovernor
 from vantage.core.lifecycle import ShutdownController
 from vantage.core.logging import get_logger
 from vantage.core.metrics import LatencyTracker
@@ -84,6 +85,7 @@ class RunResult:
     spatial_summary: dict[str, Any] = field(default_factory=dict)
     stage_health: dict[str, Any] = field(default_factory=dict)
     resources: dict[str, Any] = field(default_factory=dict)
+    adaptive: dict[str, Any] = field(default_factory=dict)
 
     def summary(self) -> str:
         base = (
@@ -151,6 +153,17 @@ class RunResult:
             if growth is not None and abs(growth) >= 1.0:
                 memory += f" ({growth:+.1f} MB since start)"
             base += f"\nresources: {detail.get('cpu_cores', 0.0):.2f} cores, {memory}"
+        if self.adaptive and self.adaptive.get("peak_interval", 1) > self.adaptive.get(
+            "base_interval", 1
+        ):
+            detail = self.adaptive
+            base += (
+                f"\nadaptive: analysis interval {detail['base_interval']} -> "
+                f"{detail['interval']} (peak {detail['peak_interval']}), "
+                f"{detail['degraded_s']:.0f}s degraded"
+            )
+            if detail.get("at_ceiling_s", 0) > 0:
+                base += f", {detail['at_ceiling_s']:.0f}s at the ceiling"
         degraded = [stat for stat in self.stage_health.values() if stat.get("failures")]
         if degraded:
             # Never folded into a healthy-looking summary. A stage that failed
@@ -239,19 +252,54 @@ def run_ingestion(
     resources = ResourceSampler()
     latest_resources = None
     final_resources = None
+    governor = _build_governor(config)
+    analysis_cost = LatencyTracker(window=120)
+    last_frame_monotonic = None
 
     try:
         info = pipeline.start()
         log.info("ingestion started", extra={"vantage_fields": {"source": info.describe()}})
 
+        if governor is not None and not info.is_live:
+            # A recorded source has no deadline: analysing it slowly produces
+            # exactly the same answer as analysing it quickly, so shedding load
+            # would trade information for nothing. Said out loud, because a
+            # governor that silently does not run is worse than one that does.
+            log.info(
+                "adaptive load shedding not engaged",
+                extra={
+                    "vantage_fields": {
+                        "reason": "source is recorded, so there is no frame deadline to miss"
+                    }
+                },
+            )
+            governor = None
+
         for frame in pipeline.frames():
             stats = pipeline.stats()
+
+            # Measured between deliveries rather than taken from declared_fps:
+            # a camera that claims 30 fps and delivers 22 has a real budget of
+            # 45 ms, and shedding load against the number on the box would
+            # leave the pipeline permanently behind.
+            now_monotonic = clock.monotonic()
+            frame_gap_ms = (
+                (now_monotonic - last_frame_monotonic) * 1000.0
+                if last_frame_monotonic is not None
+                else 0.0
+            )
+            last_frame_monotonic = now_monotonic
+            analysis_interval = config.detection.interval
+            if governor is not None:
+                analysis_interval = governor.observe(
+                    analysis_cost.mean, frame_gap_ms, frame_gap_ms / 1000.0
+                )
 
             if detector is not None:
                 # Counted on *delivered* frames, not on frame.index. Under
                 # backpressure the source index has gaps, and a modulo on it
                 # could line up so that detection never runs at all.
-                should_detect = delivered_count % config.detection.interval == 0
+                should_detect = delivered_count % analysis_interval == 0
                 delivered_count += 1
                 if should_detect:
                     detected = stages.guard("detection").run(detector.detect, frame)
@@ -363,6 +411,10 @@ def run_ingestion(
                                         }
                                     },
                                 )
+                    # What one analysed frame actually cost, end to end. The
+                    # governor divides this by the interval to get the cost per
+                    # *delivered* frame, which is what has to fit the budget.
+                    analysis_cost.observe((clock.monotonic() - now_monotonic) * 1000.0)
                 else:
                     # Carry the last pass forward so the display stays populated
                     # between inferences, but mark it so it is drawn as stale.
@@ -427,8 +479,8 @@ def run_ingestion(
                 reason = "shutdown signal"
                 break
 
-            interval = config.app.stats_interval_s
-            if interval and clock.monotonic() - last_stats_log >= interval:
+            stats_interval = config.app.stats_interval_s
+            if stats_interval and clock.monotonic() - last_stats_log >= stats_interval:
                 last_stats_log = clock.monotonic()
                 _log_stats(stats)
 
@@ -479,6 +531,7 @@ def run_ingestion(
         activity_summary=_activity_summary(latest_activity),
         spatial_summary=_spatial_summary(spatial_engine, latest_spatial),
         stage_health=stages.to_dict(),
+        adaptive=(governor.stats.to_dict() if governor is not None else {}),
         resources=(final_resources.to_dict() if final_resources is not None else {}),
     )
     log.info("run complete", extra={"vantage_fields": {"summary": result.summary()}})
@@ -588,6 +641,29 @@ def _build_activity_engine(config: VantageConfig) -> ActivityEngine | None:
     from vantage.activity.engine import build_activity_engine
 
     return build_activity_engine(config.activity)
+
+
+def _build_governor(config: VantageConfig) -> LoadGovernor | None:
+    """Construct the load governor, or ``None`` when it should not run.
+
+    Live sources only. A recorded file has no deadline - analysing it slowly
+    gives the same answer as analysing it quickly - so shedding load there would
+    discard information in exchange for nothing. Whether the source is live is
+    known only after it opens, so this returns the governor and the run loop
+    stops consulting it if the source turns out to be recorded.
+    """
+    if not (config.app.adaptive.enabled and config.detection.enabled):
+        return None
+    adaptive = config.app.adaptive
+    return LoadGovernor(
+        base_interval=config.detection.interval,
+        params=GovernorParams(
+            headroom=adaptive.headroom,
+            max_interval=adaptive.max_interval,
+            raise_after_s=adaptive.raise_after_s,
+            lower_after_s=adaptive.lower_after_s,
+        ),
+    )
 
 
 def _build_spatial_engine(config: VantageConfig) -> SpatialEngine | None:

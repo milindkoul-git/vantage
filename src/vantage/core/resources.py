@@ -215,7 +215,9 @@ def _rss_linux() -> int | None:
     try:
         with open("/proc/self/statm", encoding="ascii") as handle:
             resident_pages = int(handle.read().split()[1])
-        return resident_pages * os.sysconf("SC_PAGE_SIZE")
+        # os.sysconf does not exist on Windows; this branch only runs on Linux,
+        # which a type checker analysing a Windows stdlib cannot know.
+        return resident_pages * os.sysconf("SC_PAGE_SIZE")  # type: ignore[attr-defined]
     except (OSError, IndexError, ValueError):
         return None
 
@@ -229,6 +231,9 @@ def _rss_macos() -> int | None:
     try:
         import resource
 
-        return int(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss)
+        # Same as above: the resource module is Unix-only.
+        return int(
+            resource.getrusage(resource.RUSAGE_SELF).ru_maxrss  # type: ignore[attr-defined]
+        )
     except (ImportError, OSError):
         return None

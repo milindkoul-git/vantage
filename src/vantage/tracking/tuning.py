@@ -269,7 +269,10 @@ def _with(params: TrackerParams, name: str, value: float) -> TrackerParams:
         return replace(params, noise=replace(params.noise, **{name: value}))
     if name == "min_hits":
         return replace(params, min_hits=int(value))
-    return replace(params, **{name: value})
+    # Assigning a dataclass field chosen at runtime. The search space is a
+    # table of (name, values), so the field is a string until it is applied;
+    # a checker cannot know which of the mixed field types this name selects.
+    return replace(params, **{name: value})  # type: ignore[arg-type]
 
 
 def search(

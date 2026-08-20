@@ -1302,6 +1302,75 @@ Resident memory is **flat at ~67 MB** whether the run is 500 frames or 6,000,
 and per-frame growth *falls* as the run lengthens. That is the signature of
 one-off warmup allocation, not retention. `pytest -m slow` asserts it.
 
+### Adaptive load shedding
+
+A detector taking 84 ms cannot run on every frame of a 30 fps camera. Left
+alone the pipeline does not slow down - it **drops** frames under backpressure,
+so analysis silently sees an arbitrary subset of reality while the frame rate
+looks fine, and every later stage inherits that.
+
+The governor computes the interval rather than hunting for it: if analysis costs
+`C` and frames arrive every `B`, then analysing one frame in `N` costs `C/N` per
+delivered frame, so the smallest workable `N` is `ceil(C / (B x headroom))`. It
+lands in one step; a controller that nudged up and down would take seconds and
+oscillate. Hysteresis then stops it twitching - raising is prompt because being
+over budget is a live problem, lowering needs six seconds of headroom because
+lowering early puts the pipeline straight back into the overload it escaped.
+
+Measured, with a detector forced to take 60 ms against a 33 ms budget:
+
+| Adaptive | Delivered | Dropped | Detections |
+|---|---|---|---|
+| **on** | **30.9 fps** | 67,440 | 102 |
+| off | 15.9 fps | 132,684 | 200 |
+
+Delivery rate doubles and drops halve, in exchange for analysing fewer frames.
+That is the trade, stated plainly: temporal resolution of the analysis is given
+up to keep the pipeline current.
+
+**Live sources only.** A recorded file has no deadline - analysing it slowly
+gives the same answer - so shedding load there would discard information for
+nothing. When a recorded source is opened the governor stands down and says so,
+because one that silently does not run is worse than one that does.
+
+Every interval change is logged with its reason, and the run summary reports
+peak interval and time degraded. A system that quietly changes how much of
+reality it looks at makes every later result inexplicable.
+
+### Types
+
+`mypy` runs clean over all 80 source modules and gates CI. It is deliberately
+not `--strict`: the value is in the mistakes a checker is uniquely good at, and
+requiring annotations everywhere would mostly add noise to numpy-heavy code
+where the useful type is "an array of some shape".
+
+It earned its place immediately, finding two real defects in code written the
+same hour:
+
+* **`_shorten` defined twice** in the HUD. The second silently shadowed the
+  first, which was dead from the moment it was written.
+* **`interval` bound twice in the run loop** with different meanings *and
+  different types* - the analysis interval, then the stats-logging interval.
+  Functionally safe only because the first is reassigned at the top of every
+  iteration; a latent trap either way.
+
+Two configuration findings are worth recording, because both were wrong first:
+
+* **Pinning `python_version` to the project floor was wrong.** At 3.11 mypy
+  parses numpy's bundled stubs under 3.11 rules, where their `type` statements
+  are a syntax error. Following the running interpreter fixes it.
+* **Skipping numpy's stubs was worse.** It turned one parse error into
+  seventeen "need type annotation" errors, because without them no array
+  expression has an inferable type. The fix made the codebase less checkable,
+  not more.
+* **`warn_unreachable` is off**, and not for convenience. mypy narrows
+  `sys.platform` to the platform it runs on, so every correct
+  `if sys.platform == "linux"` branch is "unreachable" when checked on Windows.
+  With CI on both, the flag fails one job or the other for correct code, and
+  per-branch silencing is worse: the ignore needed on Windows becomes an
+  unused-ignore error on Linux. It found one genuine dead statement before
+  being turned off, which is fixed.
+
 ### CI gates on the ground-truth harnesses
 
 `.github/workflows/ci.yml` runs on Linux and Windows, Python 3.11 and 3.13. As

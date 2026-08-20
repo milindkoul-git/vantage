@@ -182,6 +182,11 @@ def _make_synthetic(config: SourceConfig, parsed: ParsedURI, clock: Clock) -> Fr
         frames=parsed.int_param("frames", None),
         seed=parsed.int_param("seed", 7) or 7,
         objects=parsed.int_param("objects", 4) or 0,
+        # Lets the generator present as a camera, which is the only way to
+        # exercise deadline-driven behaviour - backpressure, adaptive load
+        # shedding - without one. The frames are identical either way; only
+        # is_live changes, and with it whether missing a frame matters.
+        live=parsed.params.get("live", "").lower() in ("1", "true", "yes"),
         uri=parsed.uri,
         clock=clock,
     )
@@ -234,6 +239,8 @@ def describe_schemes() -> dict[str, str]:
     return {
         "webcam:N": "Local capture device by index (also 'camera:N', or a bare number).",
         "file:PATH": "Media file decoded via FFmpeg (a bare existing path also works).",
-        "synthetic://?k=v": "Generated video. Params: width, height, fps, frames, seed, objects.",
+        "synthetic://?k=v": (
+            "Generated video. Params: width, height, fps, frames, seed, objects, live."
+        ),
         "rtsp://HOST/PATH": f"Network stream. Schemes: {', '.join(sorted(_STREAM_SCHEMES))}.",
     }

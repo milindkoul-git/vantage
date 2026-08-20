@@ -199,9 +199,9 @@ class OpenVinoBackend(InferenceBackend):
         ]
 
     def close(self) -> None:
-        self._request = None  # type: ignore[assignment]
-        self._compiled = None  # type: ignore[assignment]
-        self._core = None  # type: ignore[assignment]
+        self._request = None
+        self._compiled = None
+        self._core = None
 
 
 def _static_shape_for(model, input_shape: tuple[int, int] | None) -> list[int] | None:

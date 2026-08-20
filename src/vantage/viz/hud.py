@@ -243,7 +243,10 @@ class HudRenderer:
             rows.append(("zones", summary, _WHITE if occupancy else _DIM))
 
         for entity, zone in spatial.crossings():
-            rows.append((zone.event.value, f"{entity.entity_id} {zone.zone}", _WARN))
+            # crossings() only yields occupancies with an event; narrowed
+            # here so a type checker can see what the filter guarantees.
+            event = zone.event.value if zone.event else "changed"
+            rows.append((event, f"{entity.entity_id} {zone.zone}", _WARN))
 
         counts = {k: v for k, v in spatial.counts().items() if k != "near"}
         if counts:
@@ -456,10 +459,6 @@ class HudRenderer:
 def _text_scale(width: int) -> float:
     """Keep the panel legible from 320px to 4K without hard-coding a size."""
     return max(0.75, min(1.6, width / 1280.0))
-
-
-def _shorten(text: str, limit: int) -> str:
-    return text if len(text) <= limit else f"{text[: limit - 3]}..."
 
 
 def _shorten(text: str, limit: int) -> str:

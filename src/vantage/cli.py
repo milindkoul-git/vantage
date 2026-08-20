@@ -366,8 +366,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             return _cmd_spatial(args)
         if command == "discover":
             return _cmd_discover(args)
+        # No return after this: parser.error() exits the process, so anything
+        # following it is dead code that only looks like a safety net.
         parser.error(f"unknown command {command!r}")
-        return EXIT_ERROR
     except VantageError as exc:
         # Expected, actionable failures: report the message, not a traceback.
         log.error("%s", exc)
@@ -502,7 +503,7 @@ def _cmd_models(args: argparse.Namespace) -> int:
         print(f"Models (cache: {store.directory})\n")
         # Width driven by the longest key so a new catalog entry cannot silently
         # break the alignment, which is what happened when the D-FINE keys landed.
-        key_width = max(14, *(len(e["key"]) for e in entries)) if entries else 14
+        key_width = max(14, *(len(str(e["key"])) for e in entries)) if entries else 14
         print(
             f"  {'KEY':{key_width}s} {'TASK':6s} {'INPUT':9s} {'SIZE':>7s} {'mAP':>6s}  "
             f"{'OUTPUTS':>7s}  {'LICENSE':11s} STATUS"

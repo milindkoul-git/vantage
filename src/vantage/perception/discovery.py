@@ -219,6 +219,7 @@ def build_discovery_engine(
 ) -> DiscoveryEngine:
     """Resolve a catalog key into a ready discovery engine."""
     from vantage.perception.adapters import get_adapter
+    from vantage.perception.adapters.grounding_dino import GroundingDinoAdapter
     from vantage.perception.backends import create_backend
     from vantage.perception.catalog import get_model_spec
     from vantage.perception.store import ModelStore
@@ -235,7 +236,20 @@ def build_discovery_engine(
     path = store.ensure(spec, allow_download=allow_download)
     tokenizer = load_tokenizer(model_dir, allow_download=allow_download)
 
-    adapter = get_adapter(spec.adapter)(
+    # Narrowed explicitly rather than trusting the generic registry. get_adapter
+    # returns type[ModelAdapter], whose constructor takes neither prompts nor a
+    # tokenizer - so calling it with them is only correct because the label_set
+    # check above already established which adapter this is. A type checker
+    # flagged that as three errors, and it was right to: the registry's type
+    # does not express "this particular adapter needs more arguments".
+    adapter_cls = get_adapter(spec.adapter)
+    if not issubclass(adapter_cls, GroundingDinoAdapter):
+        raise ConfigError(
+            f"model {spec.key!r} declares label_set 'open-vocabulary' but its "
+            f"adapter {spec.adapter!r} is not an open-vocabulary adapter. The "
+            "catalog entry is inconsistent."
+        )
+    adapter = adapter_cls(
         input_size=spec.input_size,
         labels=spec.labels,
         prompts=prompts,
