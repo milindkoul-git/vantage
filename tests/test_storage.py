@@ -242,11 +242,11 @@ class TestRetention:
             [observation_row(timestamp=now - 86400), observation_row(timestamp=now)]
         )
         removed = store.prune(now - 3600)
-        assert removed == {"observations": 1, "events": 1}
+        assert removed == {"observations": 1, "events": 1, "heartbeat": 0}
         assert store.counts()["events"] == 1
 
     def test_prune_on_an_empty_store_is_harmless(self, store: SqliteStore) -> None:
-        assert store.prune(time.time()) == {"observations": 0, "events": 0}
+        assert store.prune(time.time()) == {"observations": 0, "events": 0, "heartbeat": 0}
 
     def test_size_includes_the_wal_sidecar(self, store: SqliteStore) -> None:
         """The main file alone reported 4096 bytes for five hundred rows -

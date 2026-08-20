@@ -250,6 +250,15 @@ storage:
   retention_days: 30.0       # 0 disables pruning (and the disk fills eventually)
   event_retention_days: 365.0
   #
+  heartbeat_interval_s: 60.0
+  # One row a minute saying "this camera was alive", written whether or not
+  # anything was seen. That last part is the whole point. An empty scene
+  # produces no observation rows, so without this the database cannot tell an
+  # empty room from a stopped recorder - and Phase 11 analytics then either
+  # learns every outage as normal quiet, or refuses to judge any overnight hour
+  # at all. Neither is acceptable, and no cleverness over the observation rows
+  # can recover the difference, because it genuinely is not in them.
+  #
   # observation_interval is the lever that matters. At 30 fps with four
   # entities, recording every frame is 120 rows a second - ten million a day,
   # nearly all identical to their predecessor, because entity state changes on
@@ -336,6 +345,47 @@ identity:
   # Smallest face worth embedding, as a fraction of the person box height. A
   # distant person's face is a dozen pixels, and embedding it yields a
   # confident-looking vector containing no information.
+
+analytics:
+  # Phase 11: aggregation, baselines and anomaly detection over stored history.
+  #
+  # Nothing here runs in the live pipeline. These are the defaults the
+  # `vantage analytics` command starts from, and it reads the store - so it can
+  # be pointed at a database while the camera is running, or at one copied off
+  # the machine entirely.
+
+  interval_s: 3600.0   # bucket width; one hour
+  period_hours: 168
+  # 168: normal varies by day of week as well as by hour - Tuesday 09:00 is
+  # compared against other Tuesdays at 09:00. 24: only by hour of day, which
+  # needs a quarter as much history and cannot tell a weekend from a weekday.
+
+  sensitivity: 3.5
+  # Robust z-score at which a bucket is called anomalous. MEASURED behaviour at
+  # this value, on synthetic data with realistic tails: roughly one false alarm
+  # every seven weeks, catching half of all +60% deviations and almost all +80%
+  # ones. Re-measure it yourself with:  vantage analytics characterise
+
+  training_span_s: 2419200.0   # four weeks
+  # Four weeks gives a weekly baseline four samples per slot. That is the least
+  # that can be called a pattern rather than a coincidence, and the statistics
+  # carry an explicit small-sample correction because the median absolute
+  # deviation of four numbers is otherwise low by a third - which turns a
+  # nominal 3.5-sigma band into a 2.3-sigma one and fires constantly.
+
+  infer_zeros: true
+  zero_reach: 2
+  # An hour with no rows is ambiguous: nobody was there, or nothing was
+  # recording. Heartbeats settle it outright where they exist. Where they do
+  # not - a database written before they did - an empty bucket with recorded
+  # activity within `zero_reach` buckets on BOTH sides is taken as a genuine
+  # quiet hour. Both sides is deliberate: a one-sided rule would mark the start
+  # of every outage as normal quiet.
+
+  judge_empty: false
+  # Whether to flag hours with no data as anomalies. Off by default because it
+  # reports recorder downtime as a change in the scene. Turn it on when the
+  # camera is known to run continuously and you want it to shout when it stops.
 
 display:
   enabled: true

@@ -192,6 +192,17 @@ class Store(Protocol):
 
     def write_observations(self, records: list[dict[str, Any]]) -> int: ...
 
+    def write_heartbeats(self, records: list[dict[str, Any]]) -> int: ...
+
+    """Record that a camera was alive at these moments.
+
+    Part of the protocol rather than an extra on the SQLite implementation,
+    because the writer calls it on whatever store it was given. Analytics needs
+    it to tell an empty scene apart from a stopped recorder, and no arrangement
+    of the observation rows can substitute for it."""
+
+    def heartbeats(self, since: float, until: float) -> list[float]: ...
+
     def events(self, query: Query) -> list[StoredEvent]: ...
 
     def observations(self, query: Query) -> list[StoredObservation]: ...

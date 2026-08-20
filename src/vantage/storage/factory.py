@@ -37,6 +37,7 @@ def build_storage(config, camera_id: str) -> tuple[SqliteStore, StoreWriter, Rec
         camera_id=camera_id,
         observation_interval=config.observation_interval,
         store_observations=config.store_observations,
+        heartbeat_interval_s=config.heartbeat_interval_s,
     )
     log.info(
         "storage ready",

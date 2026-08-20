@@ -28,11 +28,13 @@
 # 3. **The adapter and backend modules.** They are resolved by name through the
 #    registries rather than imported directly, so they must be named as hidden
 #    imports or the catalog resolves to a module that is not in the bundle.
+# 4. **The package metadata.** The version is read from it at import time, so a
+#    bundle without it can build cleanly and still misreport its own build.
 
 import sys
 from pathlib import Path
 
-from PyInstaller.utils.hooks import collect_dynamic_libs, collect_submodules
+from PyInstaller.utils.hooks import collect_dynamic_libs, collect_submodules, copy_metadata
 
 ROOT = Path(SPECPATH).parent
 SRC = ROOT / "src"
@@ -43,6 +45,12 @@ datas = [
     (str(SRC / "vantage" / "dashboard" / "static"), "vantage/dashboard/static"),
     (str(ROOT / "configs" / "default.yaml"), "configs"),
 ]
+
+# The package's own dist-info. ``vantage.__version__`` reads it through
+# importlib.metadata rather than repeating the number in source, so without this
+# the bundle answers ``vantage.exe --version`` with its unknown-version fallback
+# - a shipped binary that cannot say which build it is.
+datas += copy_metadata("vantage")
 
 binaries = []
 hiddenimports = [
