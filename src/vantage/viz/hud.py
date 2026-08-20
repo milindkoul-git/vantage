@@ -30,6 +30,7 @@ if TYPE_CHECKING:  # imported for typing only - viz must not require a detector
     from vantage.pose.contracts import PoseResult
     from vantage.state.contracts import StateResult
     from vantage.activity.contracts import ActivityResult
+    from vantage.spatial.contracts import SpatialResult
 
 _FONT = cv2.FONT_HERSHEY_SIMPLEX
 _WHITE = (245, 245, 245)
@@ -60,6 +61,7 @@ class HudRenderer:
         pose: "PoseResult | None" = None,
         state: "StateResult | None" = None,
         activity: "ActivityResult | None" = None,
+        spatial: "SpatialResult | None" = None,
     ) -> np.ndarray:
         """Return an annotated copy of ``image``.
 
@@ -80,6 +82,8 @@ class HudRenderer:
             lines.extend(self._compose_pose(pose))
         if activity is not None:
             lines.extend(self._compose_activity(activity))
+        if spatial is not None:
+            lines.extend(self._compose_spatial(spatial))
         if extra:
             lines.extend(("", value, _DIM) for value in extra)
 
@@ -171,6 +175,40 @@ class HudRenderer:
             )
         )
         rows.append(("det rate", f"max {1000.0 / total:.1f} fps" if total > 0 else "n/a", _DIM))
+        return rows
+
+    def _compose_spatial(
+        self, spatial: "SpatialResult"
+    ) -> list[tuple[str, str, tuple[int, int, int]]]:
+        """Zone occupancy, boundary crossings and the notable relations."""
+        rows: list[tuple[str, str, tuple[int, int, int]]] = []
+
+        occupancy = spatial.occupancy()
+        if spatial.zones_defined:
+            summary = (
+                ", ".join(f"{n} in {name}" for name, n in sorted(occupancy.items()))
+                or "all zones empty"
+            )
+            rows.append(("zones", summary, _WHITE if occupancy else _DIM))
+
+        for entity, zone in spatial.crossings():
+            rows.append((zone.event.value, f"{entity.entity_id} {zone.zone}", _WARN))
+
+        counts = {k: v for k, v in spatial.counts().items() if k != "near"}
+        if counts:
+            rows.append(
+                (
+                    "relations",
+                    ", ".join(f"{n} {name}" for name, n in sorted(counts.items())),
+                    _WHITE,
+                )
+            )
+        # Without motion state, interaction is only claimed on a confirmed
+        # reach. That materially changes what the line above can mean, so it is
+        # said rather than left for someone to infer from missing rows.
+        if spatial.zones_defined or counts:
+            if not spatial.state_available:
+                rows.append(("note", "no motion state: reach-confirmed only", _DIM))
         return rows
 
     def _compose_activity(

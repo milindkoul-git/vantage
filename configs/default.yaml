@@ -142,6 +142,41 @@ activity:
   # ignore the real one. This is not a certified fall detector; see the
   # limitations in README S8 before relying on it.
 
+spatial:
+  # Zones and pairwise relations. Needs no model - geometry over the tracks and
+  # poses the earlier stages already produce - so it is on whenever tracking is.
+  enabled: true
+
+  # Zones are polygons in NORMALISED coordinates, so a zone drawn against a
+  # 1080p stream still means the same part of the scene at 720p. An entity is
+  # in a zone when its ground point - the bottom centre of its box - is inside.
+  # Overlapping zones are fine; an entity is reported in all of them.
+  zones: []
+  # zones:
+  #   - name: doorway
+  #     kind: entrance
+  #     points: [[0.35, 0.5], [0.65, 0.5], [0.65, 1.0], [0.35, 1.0]]
+
+  near_distance: 1.5       # entity heights; under a common-ground assumption
+  near_hysteresis: 0.3     # extra distance needed to STOP being near
+  approach_rate: 0.25      # heights per second of closing before it is reported
+  approach_window_s: 0.8
+  interact_distance: 0.6   # must not exceed near_distance
+  interact_s: 1.0          # how long before proximity becomes interaction
+  reach_confidence: 0.35   # wrist landmark score for a reach to count
+  zone_event_hold_s: 1.5
+  max_entities: 24         # relations are pairwise, so the cost is quadratic
+  history: 120
+  #
+  # Distances here are entity heights, NOT metres, and they rest on entities
+  # sharing a ground plane. A camera has no depth: two people on opposite sides
+  # of a room can have overlapping boxes. That is why interaction is reported at
+  # two confidence levels - 0.85 when a wrist landmark is inside the object's
+  # box, 0.4 for sustained proximity alone - and why proximity alone also
+  # requires the person to be stationary. Measured: a person ambling past a
+  # static object satisfied any sustain threshold and produced 49 frames of
+  # false interaction until the motion gate was added.
+
 display:
   enabled: true
   window_name: "Vantage - Ingestion"

@@ -31,6 +31,8 @@ from vantage.tracking.factory import build_tracker
 from vantage.viz.hud import HudRenderer
 from vantage.viz.overlay import (
     draw_activities,
+    draw_relations,
+    draw_zones,
     draw_detections,
     draw_poses,
     draw_tracks,
@@ -46,6 +48,8 @@ if TYPE_CHECKING:  # detection is optional; importing it eagerly would make
     from vantage.state.contracts import StateResult
     from vantage.activity.contracts import ActivityResult
     from vantage.activity.engine import ActivityEngine
+    from vantage.spatial.contracts import SpatialResult
+    from vantage.spatial.engine import SpatialEngine
     from vantage.state.estimator import StateEstimator
 
 log = get_logger(__name__)
@@ -75,6 +79,7 @@ class RunResult:
     pose_summary: dict[str, Any] = field(default_factory=dict)
     state_summary: dict[str, Any] = field(default_factory=dict)
     activity_summary: dict[str, Any] = field(default_factory=dict)
+    spatial_summary: dict[str, Any] = field(default_factory=dict)
 
     def summary(self) -> str:
         base = (
@@ -118,6 +123,21 @@ class RunResult:
             counts = self.activity_summary.get("counts") or {}
             summary = ", ".join(f"{n} {name}" for name, n in sorted(counts.items()))
             base += f"\nactivity: {summary or 'nothing recognised'} at end"
+        if self.spatial_summary:
+            detail = self.spatial_summary
+            occupancy = detail.get("occupancy") or {}
+            relations = detail.get("relations") or {}
+            parts = [f"{detail.get('zones', 0)} zones"]
+            if occupancy:
+                parts.append(
+                    "occupied: "
+                    + ", ".join(f"{n} in {name}" for name, n in sorted(occupancy.items()))
+                )
+            if relations:
+                parts.append(
+                    ", ".join(f"{n} {name}" for name, n in sorted(relations.items()))
+                )
+            base += f"\nspatial: {'; '.join(parts)} at end"
         return base
 
 
@@ -187,6 +207,8 @@ def run_ingestion(
     latest_state = None
     activity_engine = _build_activity_engine(config)
     latest_activity = None
+    spatial_engine = _build_spatial_engine(config)
+    latest_spatial = None
 
     try:
         info = pipeline.start()
@@ -249,6 +271,21 @@ def run_ingestion(
                                 )
                         # Activity runs after pose so it can see this frame's
                         # skeletons rather than the previous pass's.
+                        # Spatial runs before activity so both see the same
+                        # frame's poses, and neither depends on the other.
+                        if spatial_engine is not None:
+                            latest_spatial = spatial_engine.update(
+                                latest_tracking, latest_pose, latest_state
+                            )
+                            if latest_spatial.relations or latest_spatial.crossings():
+                                log.debug(
+                                    "spatial",
+                                    extra={
+                                        "vantage_fields": {
+                                            "summary": latest_spatial.describe()
+                                        }
+                                    },
+                                )
                         if activity_engine is not None and latest_state is not None:
                             latest_activity = activity_engine.update(latest_state, latest_pose)
                             notable = latest_activity.notable()
@@ -281,6 +318,7 @@ def run_ingestion(
                         pose=latest_pose,
                         state=latest_state,
                         activity=latest_activity,
+                        spatial=latest_spatial,
                     )
                     if hud_enabled
                     else frame.editable_copy()
@@ -288,6 +326,10 @@ def run_ingestion(
                 # Tracks supersede raw detections on screen. Drawing both would
                 # double every box, and once identity exists it is the more
                 # informative of the two.
+                if spatial_engine is not None and spatial_engine.zones:
+                    # Scenery goes down first: a zone polygon drawn over a
+                    # person's box would obscure the thing being analysed.
+                    image = draw_zones(image, spatial_engine.zones, latest_spatial)
                 if latest_tracking is not None:
                     image = draw_tracks(image, latest_tracking, stale=detection_stale)
                 elif latest_detection is not None:
@@ -300,6 +342,8 @@ def run_ingestion(
                         latest_pose,
                         min_confidence=config.pose.min_keypoint_confidence,
                     )
+                if latest_spatial is not None and latest_tracking is not None:
+                    image = draw_relations(image, latest_spatial, latest_tracking)
                 if latest_activity is not None and latest_tracking is not None:
                     image = draw_activities(image, latest_activity, latest_tracking)
                 key = sink.show(image)
@@ -356,6 +400,7 @@ def run_ingestion(
         pose_summary=_pose_summary(estimator, pose_latency, latest_pose, pose_steps),
         state_summary=_state_summary(latest_state),
         activity_summary=_activity_summary(latest_activity),
+        spatial_summary=_spatial_summary(spatial_engine, latest_spatial),
     )
     log.info("run complete", extra={"vantage_fields": {"summary": result.summary()}})
     return result
@@ -464,6 +509,28 @@ def _build_activity_engine(config: VantageConfig) -> "ActivityEngine | None":
     from vantage.activity.engine import build_activity_engine
 
     return build_activity_engine(config.activity)
+
+
+def _build_spatial_engine(config: VantageConfig) -> "SpatialEngine | None":
+    """Construct the spatial analyser, or ``None`` when it is off."""
+    if not (config.spatial.enabled and config.tracking.enabled):
+        return None
+    from vantage.spatial.engine import build_spatial_engine
+
+    return build_spatial_engine(config.spatial)
+
+
+def _spatial_summary(
+    engine: "SpatialEngine | None", latest: "SpatialResult | None"
+) -> dict[str, Any]:
+    if engine is None or latest is None:
+        return {}
+    return {
+        "zones": len(engine.zones),
+        "occupancy": latest.occupancy(),
+        "relations": latest.counts(),
+        "state_available": latest.state_available,
+    }
 
 
 def _activity_summary(latest: "ActivityResult | None") -> dict[str, Any]:

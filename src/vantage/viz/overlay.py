@@ -25,8 +25,10 @@ if TYPE_CHECKING:  # tracking is optional at render time; the overlay must not
     from vantage.tracking.contracts import Track, TrackingResult
     from vantage.pose.contracts import PoseResult
     from vantage.activity.contracts import ActivityResult
+    from vantage.spatial.contracts import SpatialResult, Zone
 
 from vantage.activity.contracts import Activity
+from vantage.spatial.contracts import Relation
 from vantage.pose.contracts import SKELETON, Posture
 
 _FONT = cv2.FONT_HERSHEY_SIMPLEX
@@ -354,4 +356,82 @@ def draw_activities(
         # fall does not blend into whatever hue that person happens to own.
         color = (0, 165, 255) if primary.activity.is_transient else track_color(entity.track_id)
         _draw_label(canvas, label, (x1, min(canvas.shape[0] - 2, y2 + 18)), color, scale)
+    return canvas
+
+
+def draw_zones(
+    image: np.ndarray,
+    zones: "tuple[Zone, ...]",
+    result: "SpatialResult | None" = None,
+    *,
+    thickness: int = 2,
+) -> np.ndarray:
+    """Draw zone polygons and their current occupancy.
+
+    Same ownership contract as :func:`draw_detections`.
+
+    Outlines rather than filled regions. A translucent fill was tried first and
+    was worse: it tints everything inside, including the people the operator is
+    watching, and two overlapping zones compound into a colour that belongs to
+    neither. An outline says exactly where the boundary is and obscures nothing.
+    """
+    canvas = image if image.flags.writeable else image.copy()
+    height, width = canvas.shape[:2]
+    scale = max(0.4, min(0.7, width / 1600.0))
+    occupancy = result.occupancy() if result is not None else {}
+
+    for index, zone in enumerate(zones):
+        color = class_color(index * 7 + 3)
+        points = np.array(
+            [[int(x * width), int(y * height)] for x, y in zone.points], dtype=np.int32
+        )
+        cv2.polylines(canvas, [points], True, color, thickness, cv2.LINE_AA)
+
+        count = occupancy.get(zone.name, 0)
+        label = zone.name if not count else f"{zone.name} ({count})"
+        anchor = points[points[:, 1].argmin()]
+        _draw_label(canvas, label, (int(anchor[0]), int(anchor[1])), color, scale)
+    return canvas
+
+
+def draw_relations(
+    image: np.ndarray,
+    result: "SpatialResult",
+    tracking: "TrackingResult",
+    *,
+    thickness: int = 2,
+) -> np.ndarray:
+    """Draw a line between related entities, labelled with the relation.
+
+    Only the relations worth a line are drawn: `near` is left out, because in a
+    group everyone is near everyone and the frame turns into a mesh that hides
+    the one relation that matters. Interaction and approach are drawn, since
+    those are the claims a viewer would want to check by eye.
+    """
+    canvas = image if image.flags.writeable else image.copy()
+    scale = max(0.4, min(0.7, canvas.shape[1] / 1600.0))
+    boxes = {track.track_id: track.box for track in tracking.tracks}
+
+    for relation in result.relations:
+        if relation.relation is Relation.NEAR:
+            continue
+        first = boxes.get(relation.subject_track)
+        second = boxes.get(relation.object_track)
+        if first is None or second is None:
+            continue
+
+        start = tuple(int(v) for v in first.bottom_center)
+        end = tuple(int(v) for v in second.bottom_center)
+        # Amber for interaction, matching the transient-event colour the
+        # activity overlay uses: both are claims rather than measurements.
+        color = (0, 165, 255) if relation.relation is Relation.INTERACTING else (200, 200, 200)
+        cv2.line(canvas, start, end, color, thickness, cv2.LINE_AA)
+        midpoint = ((start[0] + end[0]) // 2, (start[1] + end[1]) // 2)
+        _draw_label(
+            canvas,
+            f"{relation.relation.value} {relation.confidence:.2f}",
+            midpoint,
+            color,
+            scale,
+        )
     return canvas

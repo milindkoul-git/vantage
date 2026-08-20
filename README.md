@@ -249,6 +249,47 @@ runtime; the remaining 19 exercise real weights and deselect cleanly.
 
 ---
 
+## 2g. What Phase 6 delivers
+
+Spatial and interaction understanding - the first phase about *pairs* and
+*places* rather than entities one at a time. It produces the two things the spec
+sketched for the event engine to consume:
+
+```text
+Person #17  --approached-->  Person #21
+Person #17  --entered-->     Zone "doorway"
+```
+
+**Zones.** Named polygons in **normalised** coordinates, so a zone drawn against
+a 1080p stream still means the same part of the scene at 720p. An entity is in a
+zone when its *ground point* - the bottom centre of its box - is inside; a
+person's box centre drifts as they change posture, their feet do not. Overlapping
+zones are supported, entry and exit are raised as events, and dwell accumulates
+in footage time.
+
+**Relations.** `near`, `approaching`, `receding` and `interacting_with`, each
+carrying its evidence in words. Distances are in **entity heights**, never
+pixels, so one threshold works across the frame.
+
+**Interaction, reported at two confidence levels** - which is the honest core of
+this phase. A wrist landmark inside the object's box is direct evidence and
+scores **0.85**. Sustained proximity alone is capped at **0.4** and says so in
+its evidence string, because two boxes close together in a flat image is
+consistent with a person standing three metres behind the object.
+
+**A scene graph**, `to_scene_record()`, as nodes and edges rather than prose -
+because the next phase needs to *query* it, and `identity` is present and always
+`None` on every node, the same seam the earlier phases left.
+
+**A ground-truth harness** of ten scripted scenes, six of which exist to check
+that something does **not** fire. `vantage spatial eval` exits non-zero on
+failure.
+
+**649 tests** (+49), 630 of which need no camera, no model file and no inference
+runtime.
+
+---
+
 ## 3. Quick start
 
 Requires Python 3.11+ (developed on 3.13.1).
@@ -377,6 +418,31 @@ vantage run --track --no-activity     # turn it off
 `activity eval` needs no camera, no model and no inference runtime, and exits
 non-zero if any scenario fails - a forbidden firing or a missed event is a
 failure, not a low score.
+
+### Zones and relations (Phase 6)
+
+Runs automatically with tracking. Relations need nothing extra; zones need to be
+drawn, in normalised coordinates so they survive a change of resolution:
+
+```yaml
+spatial:
+  zones:
+    - name: doorway
+      kind: entrance
+      points: [[0.35, 0.5], [0.65, 0.5], [0.65, 1.0], [0.35, 1.0]]
+```
+
+```bash
+vantage run --source webcam:0 --track --pose --config my.yaml
+vantage spatial scenarios     # what each scene checks, including the negatives
+vantage spatial eval          # relations, zone crossings, forbidden firings
+vantage run --track --no-spatial
+```
+
+Zone outlines are drawn under everything else with their occupancy count, and
+relations worth checking by eye - interaction and approach - are drawn as a line
+between the two entities. `near` is deliberately not drawn: in a group everyone
+is near everyone, and the mesh hides the one relation that matters.
 
 ### One-click launch (Windows)
 
@@ -552,6 +618,13 @@ vantage/
 │  ├─ contracts.py   MotionState, EntityState, the observation record
 │  └─ estimator.py   hysteresis, dwell timing, path length; no model, no weights
 │
+├─ spatial/       Phase 6: where entities are, and how they relate
+│  ├─ contracts.py   Zone, Relation, the scene-graph record
+│  ├─ analyzer.py    ray-cast zone tests, ground distance, the relation rules
+│  ├─ engine.py      footage-time accounting, pose and state pairing
+│  ├─ scenarios.py   scripted scenes, six of ten of them negatives
+│  └─ evaluation.py  relations found, zone crossings, forbidden firings
+│
 ├─ activity/      Phase 5: what has been happening, over time
 │  ├─ contracts.py   Activity, ActivityObservation, the observation record
 │  ├─ base.py        the Recognizer Protocol - the seam for a learned model
@@ -717,6 +790,41 @@ Extrapolating size across a gap of no evidence asserts something nobody knows.
 
 Worth 1 point of pooled MOTA, 5 identity switches and 9 points of occlusion IDF1 on the
 benchmark — and it was invisible to every metric until someone looked at a rendered frame.
+
+### Interaction needs motion state, because duration alone cannot tell
+lingering from passing
+
+Interaction started as "a person close to an object for long enough" - the
+sustain window being what excludes someone walking past. That is wrong, and the
+harness quantified exactly how wrong. Walking past a static object at 180 px/s
+produced nothing, which looked like success. The *same path* at 45 px/s - an
+amble - produced **49 frames of false interaction**, because a slow enough
+walk-past satisfies any sustain threshold. Raising `interact_s` only moves the
+speed at which it breaks.
+
+The discriminator that actually exists is motion state, which Phase 4 already
+computes with hysteresis: someone lingering is stationary, someone passing is
+moving. Proximity-only interaction now requires the person to have stopped. A
+confirmed reach still counts on its own, because taking something while walking
+is real and a wrist landmark inside the box is direct evidence rather than an
+inference from two rectangles.
+
+Without motion state at all - pose running, state disabled - only reach-confirmed
+interaction is claimed, and the HUD says so rather than leaving it to be inferred
+from missing rows.
+
+### A harness that cannot express motion cannot test a rule that reads it
+
+The fix above did not appear to work. The scripted scenarios still reported the
+false interactions, because their `Track` objects were built without velocities
+and defaulted to zero - so the real state estimator dutifully called every actor
+**stationary**, however fast their path moved, and the new motion gate was
+satisfied on every frame.
+
+The bug was in the harness, not the code under test, and it is the more
+interesting kind: a test double that is wrong in a way that makes the system look
+correct. Scenario tracks now derive velocity from their own paths by finite
+difference, and a test asserts that scripted actors actually move.
 
 ### Activity recognition ships no model, and that was measured
 
@@ -1079,6 +1187,35 @@ box wobbles is never reported as walking, and `no_pose` that locomotion still
 works with pose disabled while no posture-derived activity is invented from
 nothing.
 
+### Spatial and interaction (`vantage spatial eval`)
+
+Ten scripted scenes through the real state estimator:
+
+```
+SCENARIO                RELATIONS    ZONES  FORBIDDEN   FRAMES
+zone_crossing                   -      2/2          0      180
+zone_overlap                    -      2/2          0      180
+two_people_meet               2/2        -          0      180
+two_people_part               1/1        -          0      180
+far_apart                       -        -          0      180
+walk_past_object                -        -          0      120
+amble_past_object               -        -          0      360
+reach_while_walking           1/1        -          0      150
+linger_by_object              1/1        -          0      180
+reach_for_object              1/1        -          0      180
+POOLED                        6/6      4/4          0     1890
+
+Peak interaction confidence (evidence tier):
+  linger_by_object     0.40  proximity only
+  reach_for_object     0.85  reach-confirmed
+  reach_while_walking  0.85  reach-confirmed
+```
+
+Six of the ten are negatives. `amble_past_object` is the regression that forced
+the motion gate; `two_people_meet` checks that two people standing together are
+*near* and never *interacting*, since geometry alone cannot support that claim
+between two people.
+
 ### Occlusion tolerance, measured
 
 The capability the phase exists for, with exact ground truth (object crossing at 200 px/s):
@@ -1148,6 +1285,20 @@ and it inherits the posture rules' blind spot for steeply angled cameras. A
 person lowering themselves deliberately is reported as **nothing**, not as a
 low-confidence fall, because a hedged alert teaches whoever reads it to ignore
 the real one. Detection latency is 0.43 s on scripted ground truth.
+
+**Spatial claims rest on a common ground plane, and a camera has no depth.**
+Two people on opposite sides of a room can have boxes that overlap perfectly.
+Proximity is a good approximation for entities at similar depth and degrades as
+their depths diverge. Distances are entity heights, not metres, and thresholds
+should be tuned per camera rather than trusted as physical distances. An object
+that is held or wall-mounted breaks the anchor entirely: its "ground point" is
+not on the ground, so every distance to it is wrong by however far off the floor
+it is.
+
+**Interaction is the weakest claim in the platform**, which is why it carries two
+confidence levels rather than one. At 0.4 it means "a stationary person was
+close to this for a while in a flat image" - not that they touched it. Only the
+0.85 reach-confirmed tier rests on direct evidence.
 
 **Activity thresholds are chosen, not tuned.** Unlike the tracker's parameters,
 which are the output of a search against held-out data, the activity thresholds
@@ -1299,8 +1450,8 @@ not a fixed plan:
 | 3.5 | Larger detection vocabulary | Done, inserted |
 | 4 | Human pose & object state | Done |
 | 5 | Temporal activity recognition | Done |
-| 6 | Spatial & interaction understanding | Next |
-| 7 | Event engine | |
+| 6 | Spatial & interaction understanding | Done |
+| 7 | Event engine | Next |
 | 8 | Observation & event storage | |
 | 9 | Visualization / dashboard | |
 | 10 | Identity & enrolment | Optional - see below |

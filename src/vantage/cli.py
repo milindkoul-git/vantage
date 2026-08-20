@@ -154,6 +154,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="drop the five head landmarks (nose, eyes, ears) before they are constructed",
     )
     run.add_argument(
+        "--no-spatial",
+        action="store_true",
+        help="disable zones and relations, which are otherwise on with tracking",
+    )
+    run.add_argument(
         "--no-activity",
         action="store_true",
         help="disable activity recognition, which is otherwise on with tracking",
@@ -260,6 +265,23 @@ def build_parser() -> argparse.ArgumentParser:
     )
     activity.add_argument("--json", action="store_true")
 
+    spatial = sub.add_parser(
+        "spatial",
+        parents=[common],
+        help="evaluate zones and relations against scripted ground truth",
+    )
+    spatial.add_argument(
+        "action",
+        choices=["eval", "scenarios"],
+        nargs="?",
+        default="eval",
+        help="eval: score the geometry; scenarios: list what each one checks",
+    )
+    spatial.add_argument(
+        "--scenarios", default=None, help="comma-separated scenario names (default: all)"
+    )
+    spatial.add_argument("--json", action="store_true")
+
     bench = sub.add_parser(
         "bench", parents=[common], help="benchmark detection backends on this machine"
     )
@@ -324,6 +346,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             return _cmd_track(args)
         if command == "activity":
             return _cmd_activity(args)
+        if command == "spatial":
+            return _cmd_spatial(args)
         if command == "discover":
             return _cmd_discover(args)
         parser.error(f"unknown command {command!r}")
@@ -627,6 +651,89 @@ def _cmd_discover(args: argparse.Namespace) -> int:
             raise VantageError(f"could not write {args.save}")
         print(f"\nannotated frame -> {args.save}")
 
+    return EXIT_OK
+
+
+def _cmd_spatial(args: argparse.Namespace) -> int:
+    """Score zone assignment and relation detection against ground truth."""
+    from vantage.spatial.evaluation import aggregate, evaluate, format_table
+    from vantage.spatial.scenarios import SCENARIOS, build_suite
+
+    names = [n.strip() for n in args.scenarios.split(",")] if args.scenarios else None
+
+    if args.action == "scenarios":
+        if args.json:
+            print(
+                json.dumps(
+                    {
+                        name: {
+                            "description": scenario.description,
+                            "seconds": scenario.seconds,
+                            "actors": len(scenario.actors),
+                            "zones": [z.name for z in scenario.zones],
+                            "expect": [
+                                f"{r.value}:{a}:{b}" for r, a, b in scenario.expect
+                            ],
+                            "forbidden": [
+                                f"{r.value}:{a}:{b}" for r, a, b in scenario.forbidden
+                            ],
+                        }
+                        for name, scenario in SCENARIOS.items()
+                    },
+                    indent=2,
+                )
+            )
+            return EXIT_OK
+        print("Spatial scenarios\n")
+        for name, scenario in SCENARIOS.items():
+            print(f"  {name:22s} {scenario.seconds:5.1f}s  {scenario.description}")
+            if scenario.forbidden:
+                print(
+                    f"  {'':22s}         must never fire: "
+                    + ", ".join(f"{r.value}" for r, _, _ in scenario.forbidden)
+                )
+        return EXIT_OK
+
+    results = [evaluate(scenario) for scenario in build_suite(names)]
+    pooled = aggregate(results)
+
+    if args.json:
+        print(
+            json.dumps(
+                {
+                    "scenarios": [
+                        {
+                            "name": m.scenario,
+                            "relations_found": m.expected_found,
+                            "relations_expected": len(m.expected),
+                            "zone_events_found": m.zone_events_found,
+                            "zone_events_expected": m.zone_events_expected,
+                            "forbidden_firings": m.forbidden_firings,
+                            "peak_confidence": {
+                                k: round(v, 3) for k, v in m.peak_confidence.items()
+                            },
+                            "passed": m.passed,
+                        }
+                        for m in results
+                    ],
+                    "pooled": {
+                        "relations_found": pooled.expected_found,
+                        "relations_expected": len(pooled.expected),
+                        "zone_events_found": pooled.zone_events_found,
+                        "zone_events_expected": pooled.zone_events_expected,
+                        "forbidden_firings": pooled.forbidden_firings,
+                    },
+                },
+                indent=2,
+            )
+        )
+    else:
+        print(format_table(results))
+
+    failed = [m for m in results if not m.passed]
+    if failed:
+        print(f"\n{len(failed)} scenario(s) failed: {', '.join(m.scenario for m in failed)}")
+        return EXIT_ERROR
     return EXIT_OK
 
 
@@ -978,6 +1085,8 @@ def _flag_overrides(args: argparse.Namespace) -> list[str]:
         overrides.append("activity.enabled=false")
     if args.no_activity:
         overrides.append("activity.enabled=false")
+    if args.no_spatial:
+        overrides.append("spatial.enabled=false")
     if args.track or args.pose:
         # --track implies --detect rather than erroring, because a tracker with
         # no detector cannot do anything at all; requiring both flags would be

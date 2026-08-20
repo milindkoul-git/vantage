@@ -521,6 +521,99 @@ class ActivityConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class ZoneConfig:
+    """One named region, as a polygon in normalised coordinates.
+
+    Normalised to ``[0, 1]`` so a zone drawn against a 1080p stream still means
+    the same part of the scene at 720p, or when a file of a different size is
+    replayed. Pixel coordinates would quietly point somewhere else.
+    """
+
+    name: str
+    points: list[list[float]] = field(default_factory=list)
+    kind: str = "area"
+
+    def __post_init__(self) -> None:
+        if not self.name.strip():
+            raise ConfigError("every spatial.zones entry needs a name")
+        if len(self.points) < 3:
+            raise ConfigError(
+                f"zone {self.name!r} needs at least 3 points, got {len(self.points)}"
+            )
+        for index, point in enumerate(self.points):
+            if len(point) != 2:
+                raise ConfigError(
+                    f"zone {self.name!r} point {index} must be [x, y], got {point!r}"
+                )
+            if not all(0.0 <= value <= 1.0 for value in point):
+                raise ConfigError(
+                    f"zone {self.name!r} point {index} is outside [0, 1]: {point!r}. "
+                    "Zone coordinates are normalised so they survive a change of "
+                    "resolution."
+                )
+
+
+@dataclass(frozen=True, slots=True)
+class SpatialConfig:
+    """Zones and pairwise relations. Needs no model; on whenever tracking is.
+
+    Distances are in entity heights under a common-ground assumption, never in
+    metres. Read the limitations in :mod:`vantage.spatial` before treating any
+    threshold here as a physical distance.
+    """
+
+    enabled: bool = True
+    zones: list[ZoneConfig] = field(default_factory=list)
+
+    near_distance: float = 1.5
+    near_hysteresis: float = 0.3
+    approach_rate: float = 0.25
+    approach_window_s: float = 0.8
+
+    interact_distance: float = 0.6
+    interact_s: float = 1.0
+    reach_confidence: float = 0.35
+    """Minimum wrist landmark score for a reach to count as confirmed. A reach
+    is the difference between claiming contact at 0.85 confidence and at 0.4."""
+
+    zone_event_hold_s: float = 1.5
+    max_entities: int = 24
+    """Relations are pairwise, so cost is quadratic; above this only the largest
+    boxes are paired."""
+
+    history: int = 120
+
+    def __post_init__(self) -> None:
+        for name in (
+            "near_distance",
+            "near_hysteresis",
+            "approach_rate",
+            "approach_window_s",
+            "interact_distance",
+            "interact_s",
+            "zone_event_hold_s",
+        ):
+            if getattr(self, name) < 0:
+                raise ConfigError(f"spatial.{name} must be >= 0")
+        if self.interact_distance > self.near_distance:
+            raise ConfigError(
+                f"spatial.interact_distance ({self.interact_distance}) must not exceed "
+                f"spatial.near_distance ({self.near_distance}): interaction is the "
+                "closer relation, so a pair could otherwise be interacting without "
+                "being near"
+            )
+        if self.max_entities < 2:
+            raise ConfigError("spatial.max_entities must be >= 2 for a pair to exist")
+        names = [zone.name for zone in self.zones]
+        duplicates = {name for name in names if names.count(name) > 1}
+        if duplicates:
+            raise ConfigError(
+                f"duplicate zone names: {sorted(duplicates)}. Zone names identify a "
+                "place in every observation record, so they have to be unique."
+            )
+
+
+@dataclass(frozen=True, slots=True)
 class DisplayConfig:
     """The Phase 1 diagnostic viewer.
 
@@ -577,6 +670,7 @@ class VantageConfig:
     pose: PoseConfig = field(default_factory=PoseConfig)
     state: StateConfig = field(default_factory=StateConfig)
     activity: ActivityConfig = field(default_factory=ActivityConfig)
+    spatial: SpatialConfig = field(default_factory=SpatialConfig)
     display: DisplayConfig = field(default_factory=DisplayConfig)
 
     def __post_init__(self) -> None:
