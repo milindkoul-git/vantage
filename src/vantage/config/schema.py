@@ -622,6 +622,78 @@ class SpatialConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class EventRuleConfig:
+    """One configured rule. Validated when the config is read.
+
+    A typo in an activity name would otherwise be a rule that can never fire,
+    and silence is indistinguishable from calm.
+    """
+
+    type: str
+    name: str = ""
+    severity: str = "info"
+    cooldown_s: float = 5.0
+    zones: list[str] = field(default_factory=list)
+    labels: list[str] = field(default_factory=list)
+    activity: str = ""
+    relation: str = ""
+    min_confidence: float = 0.0
+    min_seconds: float = 0.0
+    min_count: int = 2
+
+    def __post_init__(self) -> None:
+        if self.severity not in ("info", "notice", "alert"):
+            raise ConfigError(
+                f"event rule severity must be info, notice or alert, got {self.severity!r}"
+            )
+        # The rest is validated by RuleSpec, which owns the rule semantics.
+        # Importing it here keeps one definition of what a valid rule is rather
+        # than two that can drift apart.
+        from vantage.events.contracts import Severity
+        from vantage.events.rules import RuleSpec
+
+        RuleSpec(
+            type=self.type,
+            name=self.name,
+            severity=Severity(self.severity),
+            cooldown_s=self.cooldown_s,
+            zones=tuple(self.zones),
+            labels=tuple(self.labels),
+            activity=self.activity,
+            relation=self.relation,
+            min_confidence=self.min_confidence,
+            min_seconds=self.min_seconds,
+            min_count=self.min_count,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class EventsConfig:
+    """Discrete events raised from the continuous observations.
+
+    Needs no model. On whenever tracking is, because the default rule set does
+    nothing on a quiet scene: the only ALERT is a fall, and the zone rules are
+    inert until zones are drawn.
+    """
+
+    enabled: bool = True
+    rules: list[EventRuleConfig] = field(default_factory=list)
+    """Empty means the built-in defaults, not "no rules". Turning the subsystem
+    off is what ``enabled: false`` is for, and conflating the two would let a
+    stray edit silence every alert with nothing saying so."""
+
+    def __post_init__(self) -> None:
+        names = [rule.name for rule in self.rules if rule.name]
+        duplicates = {name for name in names if names.count(name) > 1}
+        if duplicates:
+            raise ConfigError(
+                f"duplicate event rule names: {sorted(duplicates)}. A rule name is "
+                "the key a consumer filters on and the key a cooldown uses, so two "
+                "rules sharing one would silence each other."
+            )
+
+
+@dataclass(frozen=True, slots=True)
 class DisplayConfig:
     """The Phase 1 diagnostic viewer.
 
@@ -740,6 +812,7 @@ class VantageConfig:
     state: StateConfig = field(default_factory=StateConfig)
     activity: ActivityConfig = field(default_factory=ActivityConfig)
     spatial: SpatialConfig = field(default_factory=SpatialConfig)
+    events: EventsConfig = field(default_factory=EventsConfig)
     display: DisplayConfig = field(default_factory=DisplayConfig)
 
     def __post_init__(self) -> None:

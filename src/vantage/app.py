@@ -46,6 +46,7 @@ if TYPE_CHECKING:  # detection is optional; importing it eagerly would make
     # onnxruntime/openvino a hard requirement for plain ingestion.
     from vantage.activity.contracts import ActivityResult
     from vantage.activity.engine import ActivityEngine
+    from vantage.events.engine import EventEngine
     from vantage.perception.engine import DetectionEngine
     from vantage.pose.contracts import PoseResult
     from vantage.pose.engine import PoseEngine
@@ -86,6 +87,8 @@ class RunResult:
     stage_health: dict[str, Any] = field(default_factory=dict)
     resources: dict[str, Any] = field(default_factory=dict)
     adaptive: dict[str, Any] = field(default_factory=dict)
+    events_raised: int = 0
+    events_summary: dict[str, Any] = field(default_factory=dict)
 
     def summary(self) -> str:
         base = (
@@ -164,6 +167,18 @@ class RunResult:
             )
             if detail.get("at_ceiling_s", 0) > 0:
                 base += f", {detail['at_ceiling_s']:.0f}s at the ceiling"
+        if self.events_summary:
+            detail = self.events_summary
+            by_rule = detail.get("by_rule") or {}
+            summary = ", ".join(f"{n} {name}" for name, n in sorted(by_rule.items()))
+            base += (
+                f"\nevents: {self.events_raised} raised"
+                + (f" ({summary})" if summary else "")
+                # Suppressions are reported, not hidden. A rule suppressing
+                # thousands is either correctly debouncing a continuous state or
+                # badly configured, and only the count tells the two apart.
+                + f", {detail.get('suppressed', 0)} suppressed by cooldown"
+            )
         degraded = [stat for stat in self.stage_health.values() if stat.get("failures")]
         if degraded:
             # Never folded into a healthy-looking summary. A stage that failed
@@ -245,6 +260,9 @@ def run_ingestion(
     latest_activity = None
     spatial_engine = _build_spatial_engine(config)
     latest_spatial = None
+    event_engine = _build_event_engine(config)
+    latest_events = None
+    events_raised = 0
 
     # One guard per stage. A stage that throws loses its frame, not the run;
     # a stage that throws repeatedly is disabled and said so, loudly.
@@ -394,6 +412,9 @@ def run_ingestion(
                                         "vantage_fields": {"summary": latest_spatial.describe()}
                                     },
                                 )
+                        # Events last: they are a reduction over everything
+                        # above, so they need this frame's outputs, not the
+                        # previous frame's.
                         if activity_engine is not None and latest_state is not None:
                             latest_activity = stages.guard("activity").run(
                                 activity_engine.update,
@@ -411,6 +432,17 @@ def run_ingestion(
                                         }
                                     },
                                 )
+                        if event_engine is not None:
+                            latest_events = stages.guard("events").run(
+                                event_engine.update,
+                                latest_tracking,
+                                latest_state,
+                                latest_activity,
+                                latest_spatial,
+                                default=latest_events,
+                            )
+                            if latest_events is not None and latest_events.events:
+                                events_raised += len(latest_events)
                     # What one analysed frame actually cost, end to end. The
                     # governor divides this by the interval to get the cost per
                     # *delivered* frame, which is what has to fit the budget.
@@ -434,6 +466,7 @@ def run_ingestion(
                         state=latest_state,
                         activity=latest_activity,
                         spatial=latest_spatial,
+                        events=latest_events,
                         stages=stages,
                         resources=latest_resources,
                     )
@@ -532,6 +565,8 @@ def run_ingestion(
         spatial_summary=_spatial_summary(spatial_engine, latest_spatial),
         stage_health=stages.to_dict(),
         adaptive=(governor.stats.to_dict() if governor is not None else {}),
+        events_raised=events_raised,
+        events_summary=(dict(event_engine.stats()) if event_engine is not None else {}),
         resources=(final_resources.to_dict() if final_resources is not None else {}),
     )
     log.info("run complete", extra={"vantage_fields": {"summary": result.summary()}})
@@ -664,6 +699,15 @@ def _build_governor(config: VantageConfig) -> LoadGovernor | None:
             lower_after_s=adaptive.lower_after_s,
         ),
     )
+
+
+def _build_event_engine(config: VantageConfig) -> EventEngine | None:
+    """Construct the event engine, or ``None`` when it is off."""
+    if not (config.events.enabled and config.tracking.enabled):
+        return None
+    from vantage.events.engine import build_event_engine
+
+    return build_event_engine(config.events)
 
 
 def _build_spatial_engine(config: VantageConfig) -> SpatialEngine | None:

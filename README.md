@@ -290,6 +290,53 @@ runtime; the remaining 19 exercise real weights and deselect cleanly.
 
 ---
 
+## 2h. What Phase 7 delivers
+
+The event engine - the reduction from *what is true* to *what happened*.
+
+Everything before this phase produces **observations**: continuous statements
+true on every frame for as long as they hold. `person_3 is loitering`,
+`person_3 is in the doorway`. That is right for a state and wrong for an alert.
+An **event** is discrete: it happened, at a time, once.
+
+**The hard part is not the rules, it is the reduction.** Phase 5 holds a
+transient activity for 1.5 s so a slow consumer cannot miss it - 45 frames at
+30 fps. An engine that emitted per frame would raise **45 fall alerts for one
+fall**, and whoever read them would learn to ignore the channel, which is the
+same failure the fall rule avoided by refusing to hedge. Measured on the Phase 5
+ground truth:
+
+| Scenario | Events raised | Firings suppressed |
+|---|---|---|
+| `fall` | **1** alert | 45 |
+| `lie_down_slowly` | **0** | 0 |
+| `run` | 1 notice | 72 |
+| `loiter` | 1 notice | 283 |
+| `walk` | 0 | 0 |
+
+**Cooldown keyed by rule *and* entity.** Without the rule, loitering would
+silence a fall. Without the entity, two people falling in the same second would
+produce one alert - and the second person is exactly who a missed alert fails.
+
+**Six rule types, configured from YAML, validated at load.** `activity`,
+`zone_entry`, `zone_exit`, `zone_dwell`, `zone_occupancy`, `relation`. A typo in
+an activity name is caught when the config is read, not when the situation
+finally occurs at three in the morning - because a rule that can never fire is
+indistinguishable from a calm scene.
+
+**Every event carries its evidence** as a dict of what the rule measured, and
+`to_record()` emits the storable form with `identity` present and always `None`
+- the same seam every earlier phase left.
+
+**Suppressions are counted and reported**, never hidden. A rule suppressing
+thousands of firings is either correctly debouncing a continuous state or badly
+configured, and only the count tells the two apart.
+
+**759 tests**, 740 of which need no camera, no model file and no inference
+runtime; the remaining 19 exercise real weights and deselect cleanly.
+
+---
+
 ## 3. Quick start
 
 Requires Python 3.11+ (developed on 3.13.1).
@@ -443,6 +490,40 @@ Zone outlines are drawn under everything else with their occupancy count, and
 relations worth checking by eye - interaction and approach - are drawn as a line
 between the two entities. `near` is deliberately not drawn: in a group everyone
 is near everyone, and the mesh hides the one relation that matters.
+
+### Events (Phase 7)
+
+Runs automatically with tracking. The defaults do nothing on a quiet scene:
+
+```bash
+vantage events rules          # what is actually active, with cooldowns
+vantage events types          # the six rule types
+vantage run --track --no-events
+```
+
+Rules are configured under `events.rules`; an **empty list means the defaults**,
+not "no rules", so a stray edit cannot silence every alert quietly. Turning the
+subsystem off takes `enabled: false`.
+
+```yaml
+events:
+  rules:
+    - type: activity
+      activity: falling
+      severity: alert      # info | notice | alert
+      cooldown_s: 15
+      name: fall
+    - type: zone_dwell
+      zones: [entrance]
+      min_seconds: 30
+      severity: notice
+    - type: relation
+      relation: interacting_with
+      min_confidence: 0.8  # 0.85 is reach-confirmed; 0.4 is proximity only
+```
+
+Events appear on the HUD coloured by severity and in the run summary with the
+suppression count.
 
 ### One-click launch (Windows)
 
@@ -617,6 +698,11 @@ vantage/
 ├─ state/         Phase 4: what a tracked entity is doing, whatever it is
 │  ├─ contracts.py   MotionState, EntityState, the observation record
 │  └─ estimator.py   hysteresis, dwell timing, path length; no model, no weights
+│
+├─ events/        Phase 7: what happened, once - the discrete reduction
+│  ├─ contracts.py   Event, Severity, the storable record
+│  ├─ rules.py       six parameterised rule types, validated at load
+│  └─ engine.py      cooldown keyed by rule and entity; suppression counting
 │
 ├─ spatial/       Phase 6: where entities are, and how they relate
 │  ├─ contracts.py   Zone, Relation, the scene-graph record
@@ -1614,8 +1700,8 @@ not a fixed plan:
 | 4 | Human pose & object state | Done |
 | 5 | Temporal activity recognition | Done |
 | 6 | Spatial & interaction understanding | Done |
-| 7 | Event engine | Next |
-| 8 | Observation & event storage | |
+| 7 | Event engine | Done |
+| 8 | Observation & event storage | Next |
 | 9 | Visualization / dashboard | |
 | 10 | Identity & enrolment | Optional - see below |
 | 11 | Advanced analytics | |

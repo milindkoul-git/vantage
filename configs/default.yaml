@@ -194,6 +194,45 @@ spatial:
   # static object satisfied any sustain threshold and produced 49 frames of
   # false interaction until the motion gate was added.
 
+events:
+  # Discrete events raised from the continuous observations above. Needs no
+  # model. On whenever tracking is, because the defaults do nothing on a quiet
+  # scene: the only ALERT is a fall, and the zone rules are inert until zones
+  # are drawn.
+  enabled: true
+
+  # An EMPTY list means the built-in defaults, not "no rules". Silencing every
+  # alert takes `enabled: false`, so that a stray edit here cannot do it
+  # quietly. Run 'vantage events rules' to see what is actually active.
+  rules: []
+  # rules:
+  #   - type: activity        # falling, running, loitering, arm_raised, ...
+  #     activity: falling
+  #     severity: alert       # info | notice | alert
+  #     cooldown_s: 15
+  #     name: fall
+  #   - type: zone_entry
+  #     zones: [doorway]
+  #     severity: info
+  #   - type: zone_dwell
+  #     zones: [entrance]
+  #     min_seconds: 30
+  #     severity: notice
+  #   - type: zone_occupancy
+  #     zones: [hall]
+  #     min_count: 5
+  #     severity: notice
+  #   - type: relation
+  #     relation: interacting_with
+  #     min_confidence: 0.8   # 0.85 is reach-confirmed; 0.4 is proximity only
+  #     severity: notice
+  #
+  # cooldown_s is per rule PER ENTITY. Phase 5 holds a transient activity for
+  # 1.5s so a slow consumer cannot miss it - 45 frames at 30 fps - so without a
+  # cooldown one fall would raise 45 alerts, and a channel that cries 45 times
+  # teaches its reader to ignore it. Suppressed firings are counted and
+  # reported, never hidden.
+
 display:
   enabled: true
   window_name: "Vantage - Ingestion"

@@ -21,12 +21,14 @@ from typing import TYPE_CHECKING
 import cv2
 import numpy as np
 
+from vantage.events.contracts import Severity
 from vantage.ingestion.pipeline import PipelineStats
 
 if TYPE_CHECKING:  # imported for typing only - viz must not require a detector
     from vantage.activity.contracts import ActivityResult
     from vantage.core.resilience import StageRegistry
     from vantage.core.resources import ResourceSample
+    from vantage.events.contracts import EventResult
     from vantage.perception.contracts import DetectionResult
     from vantage.perception.engine import EngineInfo
     from vantage.pose.contracts import PoseResult
@@ -64,6 +66,7 @@ class HudRenderer:
         state: StateResult | None = None,
         activity: ActivityResult | None = None,
         spatial: SpatialResult | None = None,
+        events: EventResult | None = None,
         stages: StageRegistry | None = None,
         resources: ResourceSample | None = None,
     ) -> np.ndarray:
@@ -88,6 +91,8 @@ class HudRenderer:
             lines.extend(self._compose_activity(activity))
         if spatial is not None:
             lines.extend(self._compose_spatial(spatial))
+        if events is not None:
+            lines.extend(self._compose_events(events))
         if resources is not None:
             lines.append(("cpu/mem", resources.describe(), _DIM))
         if stages is not None:
@@ -226,6 +231,25 @@ class HudRenderer:
                         _WARN,
                     )
                 )
+        return rows
+
+    def _compose_events(
+        self, events: EventResult
+    ) -> list[tuple[str, str, tuple[int, int, int]]]:
+        """Events raised this frame, loudest first.
+
+        Nothing at all on a quiet frame, which is most of them. The absence of
+        these rows is the quiet signal; a permanent "0 events" line would be one
+        more thing to scan past on every frame.
+        """
+        rows: list[tuple[str, str, tuple[int, int, int]]] = []
+        for event in sorted(events, key=lambda e: -e.severity.rank):
+            colour = {
+                Severity.ALERT: _BAD,
+                Severity.NOTICE: _WARN,
+                Severity.INFO: _ACCENT,
+            }[event.severity]
+            rows.append((event.severity.value, _shorten(event.summary, 44), colour))
         return rows
 
     def _compose_spatial(

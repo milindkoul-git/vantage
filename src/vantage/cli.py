@@ -170,6 +170,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="drop the five head landmarks (nose, eyes, ears) before they are constructed",
     )
     run.add_argument(
+        "--no-events",
+        action="store_true",
+        help="disable event rules, which are otherwise on with tracking",
+    )
+    run.add_argument(
         "--no-spatial",
         action="store_true",
         help="disable zones and relations, which are otherwise on with tracking",
@@ -298,6 +303,16 @@ def build_parser() -> argparse.ArgumentParser:
     )
     spatial.add_argument("--json", action="store_true")
 
+    events = sub.add_parser("events", parents=[common], help="show the configured event rules")
+    events.add_argument(
+        "action",
+        choices=["rules", "types"],
+        nargs="?",
+        default="rules",
+        help="rules: what is configured; types: what rule types exist",
+    )
+    events.add_argument("--json", action="store_true")
+
     bench = sub.add_parser(
         "bench", parents=[common], help="benchmark detection backends on this machine"
     )
@@ -364,6 +379,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             return _cmd_activity(args)
         if command == "spatial":
             return _cmd_spatial(args)
+        if command == "events":
+            return _cmd_events(args)
         if command == "discover":
             return _cmd_discover(args)
         # No return after this: parser.error() exits the process, so anything
@@ -667,6 +684,70 @@ def _cmd_discover(args: argparse.Namespace) -> int:
             raise VantageError(f"could not write {args.save}")
         print(f"\nannotated frame -> {args.save}")
 
+    return EXIT_OK
+
+
+def _cmd_events(args: argparse.Namespace) -> int:
+    """Show which rules are active - the operational question this answers."""
+    from vantage.config.loader import load_config
+    from vantage.events.engine import build_event_engine
+    from vantage.events.rules import RULE_TYPES
+
+    if args.action == "types":
+        if args.json:
+            print(json.dumps(sorted(RULE_TYPES), indent=2))
+            return EXIT_OK
+        print("Event rule types\n")
+        for name in sorted(RULE_TYPES):
+            print(f"  {name}")
+        print(
+            "\nConfigure them under 'events.rules' with a 'type' and the "
+            "parameters that type uses."
+        )
+        return EXIT_OK
+
+    config = load_config(args.config, overrides=args.overrides)
+    engine = build_event_engine(config.events)
+    rules = engine.rules
+
+    if args.json:
+        print(
+            json.dumps(
+                {
+                    "enabled": config.events.enabled,
+                    "using_defaults": not config.events.rules,
+                    "rules": [
+                        {
+                            "name": rule.label,
+                            "type": rule.type,
+                            "severity": rule.severity.value,
+                            "cooldown_s": rule.cooldown_s,
+                            "zones": list(rule.zones),
+                            "activity": rule.activity,
+                            "relation": rule.relation,
+                        }
+                        for rule in rules
+                    ],
+                },
+                indent=2,
+            )
+        )
+        return EXIT_OK
+
+    state = "enabled" if config.events.enabled else "DISABLED"
+    origin = "built-in defaults" if not config.events.rules else "from config"
+    print(f"Event rules ({state}, {origin})\n")
+    width = max(10, *(len(r.label) for r in rules)) if rules else 10
+    print(f"  {'NAME':{width}s} {'TYPE':16s} {'SEVERITY':9s} {'COOLDOWN':>9s}  WATCHES")
+    for rule in rules:
+        watches = rule.activity or rule.relation or ("+".join(rule.zones) or "any zone")
+        print(
+            f"  {rule.label:{width}s} {rule.type:16s} {rule.severity.value:9s} "
+            f"{rule.cooldown_s:>8.0f}s  {watches}"
+        )
+    print(
+        "\nCooldown is per rule per entity: a condition true for many frames raises one event."
+    )
     return EXIT_OK
 
 
@@ -1105,6 +1186,8 @@ def _flag_overrides(args: argparse.Namespace) -> list[str]:
         overrides.append("activity.enabled=false")
     if args.no_spatial:
         overrides.append("spatial.enabled=false")
+    if args.no_events:
+        overrides.append("events.enabled=false")
     if args.track or args.pose:
         # --track implies --detect rather than erroring, because a tracker with
         # no detector cannot do anything at all; requiring both flags would be
