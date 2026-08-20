@@ -282,6 +282,61 @@ dashboard:
   # Every endpoint is read-only. Pruning and configuration stay on the CLI,
   # where the operator is by definition the person at the machine.
 
+identity:
+  # Answering *who*, and the only subsystem in this project that does.
+  #
+  # OFF by default and not on by accident. --identify turns it on, and it
+  # implies --track, because identity attaches a name to an entity the tracker
+  # is already following anonymously. Nothing above it depends on it: with this
+  # section removed entirely, every other stage behaves identically.
+  enabled: false
+  path: identities.db   # its own database, separate from observations
+  #
+  # WHAT IS STORED: a 128-dimensional vector per enrolled person, and nothing
+  # else. No face image is written to disk at any point. That is not the same
+  # as anonymity - a face template is biometric data, and deleting the file is
+  # the only way to unstore it. `vantage identity forget --name X` removes the
+  # template and keeps the audit record that it was removed.
+  #
+  # ENROLMENT IS NEVER AUTOMATIC. There is no code path from the running
+  # pipeline into the gallery; a face cannot become an identity by being seen.
+  # Enrolment happens through `vantage identity enroll --consent`, and the
+  # consent flag asserts that the person knows and agreed.
+
+  detector_model: yunet-face   # YuNet, MIT
+  embedder_model: sface        # SFace, Apache-2.0
+  model_dir: models
+  allow_download: true
+  face_score: 0.7              # detector confidence for a face to count
+
+  threshold: 0.363
+  # The cosine similarity a match must reach. This is the figure OpenCV Zoo
+  # publishes for these weights - inherited, not measured here. Verifying it
+  # properly needs a labelled set of real faces, which this project has no
+  # business collecting. It is exposed here for that reason: if you validate it
+  # on your own camera and people, change it.
+
+  margin: 0.05
+  # How far ahead of the runner-up the winner must be. Similarity alone is the
+  # usual advice and is how systems confidently use the wrong name: with two
+  # enrolled people who look somewhat alike, a face can clear the threshold
+  # against both and be named after whichever scored 0.001 higher. Below this
+  # margin the answer is `unknown`, which is what the evidence actually says.
+
+  interval: 10          # tracking steps between attempts on an unresolved track
+  min_votes: 3          # agreeing observations before a name is committed
+  max_attempts: 25      # then settle on unknown rather than retrying forever
+  reverify_interval: 150
+  # Steps between re-checking a track that already has a name. The tracker can
+  # swap two people who cross, and nothing else downstream would ever notice;
+  # a resolved track whose face stops matching is returned to unresolved rather
+  # than left confidently wrong. 0 disables.
+
+  min_face_fraction: 0.04
+  # Smallest face worth embedding, as a fraction of the person box height. A
+  # distant person's face is a dozen pixels, and embedding it yields a
+  # confident-looking vector containing no information.
+
 display:
   enabled: true
   window_name: "Vantage - Ingestion"

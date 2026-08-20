@@ -202,7 +202,16 @@ class TestModelsCli:
         payload = json.loads(capsys.readouterr().out)
         keys = {entry["key"] for entry in payload["models"]}
         assert "yolox-nano" in keys
-        assert all(entry["license"] == "Apache-2.0" for entry in payload["models"])
+        # Every entry must declare a licence from the permissive set the project
+        # committed to. Asserting one specific licence, as this did while every
+        # model happened to be Apache-2.0, would fail on a legitimate MIT
+        # addition while still passing on an entry that declared nothing at all.
+        permissive = {"Apache-2.0", "MIT", "BSD-3-Clause"}
+        for entry in payload["models"]:
+            assert entry["license"] in permissive, (
+                f"{entry['key']} declares {entry['license']!r}, which is not in the "
+                "permissive set this project restricts itself to"
+            )
 
     def test_models_action_requires_a_name(self) -> None:
         assert main(["models", "pull"]) == 1

@@ -3,10 +3,14 @@
 A modular platform for understanding what happens in video over time — not just what
 appears in a single frame.
 
-**Status: Phases 1-2 complete — video ingestion and object detection.** No tracking, pose,
-events, storage, dashboard, or identity functionality exists yet. Those arrive in later
-phases, deliberately and one at a time. Nothing in this repository is mocked or stubbed:
-what is here works, and what is not here is absent rather than faked.
+**Status: Phases 1-10 complete** — ingestion, detection, tracking, pose, activity,
+spatial reasoning, events, storage, dashboard, and identity. Advanced analytics (11) and
+multi-camera scaling (12) remain. Each phase was built, verified and closed out on its
+own before the next began. Nothing in this repository is mocked or stubbed: what is here
+works, and what is not here is absent rather than faked.
+
+**Identity is off by default and always optional.** Every other subsystem runs
+identically with it disabled — see [Phase 10](#2k-what-phase-10-delivers).
 
 ---
 
@@ -425,6 +429,130 @@ runtime.
 
 ---
 
+## 2k. What Phase 10 delivers
+
+Answering *who* — optionally, revocably, and only about people who agreed to it.
+
+**It is off by default and nothing depends on it.** `--identify` turns it on and
+implies `--track`, because identity attaches a name to an entity the tracker is
+already following anonymously. With the subsystem disabled — the default — every
+other stage behaves exactly as it did in Phase 9. That is asserted by a test, not
+just intended.
+
+### The licence gate ruled out the obvious choice
+
+ArcFace via InsightFace is the standard answer and is **not usable here**. Its
+model zoo states, in writing, that "ALL models are available for non-commercial
+research purposes only" — the same gate that ruled out YOLO-World (GPL-3.0) in
+Phase 3.5 and Ultralytics pose (AGPL-3.0) in Phase 4. What is used instead:
+
+| Model | Role | Licence | Size |
+|---|---|---|---|
+| YuNet | face detection + 5 landmarks | MIT | 233 KB |
+| SFace | 128-d embedding | Apache-2.0 | 38.7 MB |
+
+Both come from OpenCV Zoo, and both run through **OpenCV's own wrappers** rather
+than this project's OpenVINO backend. That is the one place the project
+deliberately breaks its own pattern. SFace expects a 112×112 crop aligned by a
+similarity transform from five landmarks onto a canonical template; getting that
+transform subtly wrong raises nothing and merely produces *worse* embeddings, so
+every similarity drifts and the published threshold stops meaning what it did.
+`cv2.FaceRecognizerSF.alignCrop` is the reference implementation for these exact
+weights. The cost is that both are CPU-only here: **12 ms to detect, 29 ms to
+embed**.
+
+### Affordable because it runs per track, not per frame
+
+41 ms per face per frame is not affordable, and would not help if it were —
+identity does not change during a track. So the engine attempts identification
+only on unresolved tracks, only every `interval` steps, accumulates agreeing
+votes until `min_votes`, then commits. Measured on a 300-frame clip with one
+person: **4 comparisons total**, not 300.
+
+**One good look is not evidence.** Committing on a single comparison means a
+person caught mid-blink at the wrong instant wears someone else's name for the
+rest of their time on camera. Three agreeing observations cost a second or two of
+"identifying" and remove almost all of that.
+
+**A committed name is re-checked.** The tracker can swap two people who cross,
+and nothing downstream would ever notice — the name would simply be on the wrong
+body. A resolved track whose face stops matching is returned to *unresolved*
+rather than left confidently wrong.
+
+### Two thresholds, because one is how systems use the wrong name
+
+A match must be similar enough **and** clearly ahead of the runner-up. Similarity
+alone is the usual advice: with two enrolled people who look somewhat alike, a
+face can score 0.40 against both, clear the threshold, and be named after
+whichever scored 0.401. Below the margin the answer is `unknown`, which is what
+the evidence actually says. Small galleries make this *more* important, not less —
+with two templates a coin flip is right half the time and looks like it works.
+
+### Enrolment is an act, not an observation
+
+**There is no code path from the running pipeline to the gallery.** A face cannot
+become an identity by being seen. This is enforced by an AST test that walks the
+engine module and asserts it never calls `_gallery.add`, `_gallery.remove`,
+`_store.enroll` or `_store.revoke`, and never imports the enrolment module.
+
+```bash
+vantage identity enroll --name alice --consent --source webcam:0
+vantage identity list
+vantage identity verify --name alice --image photo.jpg
+vantage identity audit --since 24h
+vantage identity forget --name alice        # deletes the template
+```
+
+`--consent` is refused when absent, and its help text says what it asserts rather
+than describing it as a switch: *that the person being enrolled knows about it
+and agreed to it*.
+
+**What is stored: a 128-dimensional vector per person, and nothing else.** No
+face image is written to disk at any point — not to a cache, not to a temporary
+file. That is **not** the same as anonymity. A face template is biometric data,
+and the only way to unstore it is to delete it. `forget` deletes the template and
+keeps the audit record that it was deleted.
+
+**Its own database**, separate from the observation store, so biometric data can
+be backed up, permissioned and deleted on its own terms. Enrolment, revocation,
+every committed identification, and every *rejection* are timestamped — a trail
+that logged only successes could not answer "when did this system look at me and
+decide it did not know me".
+
+### Verified
+
+- Consent gate refuses before either model is even loaded
+- Enrol from image; verify same face **1.000**, mirrored **0.927**, dimmed
+  **0.945**, half-resolution **0.862** — against a 0.363 threshold
+- Faces under 40 px are refused rather than embedded, because a 20-pixel face
+  upscaled to 112×112 yields a confident-looking vector containing no information
+- A corrupt template blob skips that one row instead of making the whole gallery
+  unloadable
+- End to end on a real clip: person detected → tracked → head cropped → face
+  found → embedded → empty gallery → `unknown`, with the rejection audited
+- The observation store's `identity` column fills when identity runs and stays
+  `NULL` when it does not
+- The dashboard shows a *committed* name only; a provisional one renders as
+  nothing, and the column is absent entirely when identity is off
+
+### Not verified, and this matters
+
+**Whether two real people are told apart has not been tested here.** Doing so
+needs labelled faces of at least two consenting individuals — which this project
+has no business collecting and no CI runner should hold. Everything above tests
+one face against itself under transformation, which measures robustness, *not*
+discrimination.
+
+Likewise, the **0.363 threshold is inherited from OpenCV Zoo, not measured on
+your camera.** It is exposed in configuration precisely for that reason. If you
+enrol two people and find the system confusing them, raise `identity.threshold`
+and `identity.margin` — and validate on your own footage before trusting either.
+
+**887 tests**, 864 of which need no camera, no model file and no inference
+runtime.
+
+---
+
 ## 3. Quick start
 
 Requires Python 3.11+ (developed on 3.13.1).
@@ -459,6 +587,28 @@ vantage run --source webcam:0 --detect
 ```
 
 Press `q` or `Esc` to quit, `s` to save a PNG snapshot, `h` to toggle the HUD.
+
+### Identity (Phase 10, opt-in)
+
+Off unless asked for. With nobody enrolled it reports every face as `unknown`,
+which is the truth rather than a fault.
+
+```bash
+vantage models pull yunet-face sface                        # 39 MB, checksum-verified
+vantage identity enroll --name alice --consent --source webcam:0
+vantage identity list
+vantage run --source webcam:0 --track --identify            # names appear over people
+vantage identity audit --since 24h                          # who was recognised, and when
+vantage identity forget --name alice                        # delete the template
+```
+
+`--consent` is required and asserts that the person being enrolled knows about it
+and agreed. Only a 128-number template is stored — no face image is written to
+disk — but a template is still biometric data, and deleting it is the only way to
+unstore it.
+
+From the launcher: `webcam.bat identity`, `webcam.bat enroll --name alice
+--consent`, `webcam.bat who`.
 
 ### Bigger vocabulary, and open-vocabulary discovery (Phase 3.5)
 
@@ -1275,6 +1425,17 @@ junk becoming published tracks. Set it equal to `detection.confidence` to opt ou
 Every numeric value in the `tracking:` block is the output of `vantage track tune`, not a
 copy of the reference paper's. Re-run it if you change detector or camera.
 
+The sections not shown above - `detection`, `pose`, `state`, `activity`, `spatial`,
+`events`, `storage`, `dashboard`, `identity` and `adaptive` - are documented inline in
+[`configs/default.yaml`](configs/default.yaml), where the comment explaining a setting sits
+next to the setting rather than in a file that can drift from it.
+
+**`identity.threshold` and `identity.margin` are the two settings you should not leave at
+their defaults without checking.** The threshold is inherited from the model's authors and
+the margin is what stops two similar-looking enrolled people being separated by a rounding
+difference. Neither has been validated against real faces in this repository, for the
+reason given under [Known limitations](#8-known-limitations).
+
 ### Source URIs
 
 | Form | Meaning |
@@ -1723,8 +1884,23 @@ than assumed.
 
 ## 8. Known limitations
 
-**Scope.** No activity recognition, events, alerts, storage, dashboard, multi-camera
-orchestration, or identity. By design.
+**Scope.** No multi-camera orchestration, no cross-camera re-identification, and no
+advanced analytics (phases 11-12). By design.
+
+**Identity discrimination is unverified.** Face recognition here has been tested for
+robustness - one face against itself, mirrored, dimmed and half-resolution - but never
+for *discrimination*, because that needs labelled faces of at least two consenting
+people, which this project does not collect and no CI runner should hold. The 0.363
+match threshold is the figure OpenCV Zoo publishes for these weights, inherited rather
+than measured on your camera. **Enrol your own people and check the result before
+trusting a name it reports.** Both the threshold and the runner-up margin are exposed in
+configuration for exactly that reason.
+
+**Identity needs a face, roughly frontal, and reasonably close.** It crops the top 45% of
+a person box and looks for a face there. Someone facing away, in profile, or far enough
+that their face is under 40 pixels is reported as `unknown` after 25 attempts and then
+left alone. That is the correct answer, but it means identity is sparse in wide-angle
+footage rather than continuous.
 
 **Posture needs legs, and a desk webcam has none.** A seated person and a
 standing one are identical from the hips up, so on a typical head-and-shoulders
@@ -1932,23 +2108,25 @@ not a fixed plan:
 | 7 | Event engine | Done |
 | 8 | Observation & event storage | Done |
 | 9 | Visualization / dashboard | Done |
-| 10 | Identity & enrolment | Optional - see below |
+| 10 | Identity & enrolment | Done - optional, off by default |
 | 11 | Advanced analytics | |
 | 12 | Optimization / multi-camera scaling | |
 
-### Identity, later
+### Identity, as built
 
-The identity layer is optional, separate, and not yet designed. Two constraints hold now
-and will keep holding:
+The two constraints stated before it existed both held, and both are now enforced by
+tests rather than by intent:
 
-1. **Tracking never depends on identity.** Anonymous tracking must work fully on its own.
-2. **The seam already exists.** Identity resolution consumes a stable anonymous
-   `entity_id` and returns a resolved identity or "unknown" — attachable without touching
-   the tracking subsystem.
+1. **Tracking never depends on identity.** Anonymous tracking works fully on its own, and
+   the pipeline behaves identically with the subsystem off — which is the default.
+2. **The seam was already there.** Identity resolution consumes the stable anonymous
+   `entity_id` and returns a name or `unknown`. Nothing in the tracking subsystem changed
+   to accommodate it.
 
-No facial recognition, biometric enrolment, or identity storage exists in this repository,
-and none will be added except deliberately, in its own phase, with the access control and
-audit logging such a subsystem requires.
+Facial recognition, biometric enrolment and identity storage now exist, deliberately, with
+the consent gate, revocation and audit logging such a subsystem requires. See
+[Phase 10](#2k-what-phase-10-delivers) for what is stored, what is not, and what has and
+has not been verified.
 
 ### Ideas worth pursuing, collected while building Phase 1
 

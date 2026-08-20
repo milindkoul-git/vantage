@@ -517,6 +517,9 @@ LABEL_SETS: dict[str, tuple[str, ...]] = {
     # labels are the prompts the caller supplies at runtime.
     "open-vocabulary": ("prompt",),
     "coco-keypoints": COCO_KEYPOINTS,
+    # Face models have no class vocabulary: the detector finds faces and the
+    # recogniser emits a vector. The placeholder keeps ModelSpec uniform.
+    "face": ("face",),
 }
 
 

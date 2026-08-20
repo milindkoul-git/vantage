@@ -13,6 +13,7 @@ import socket
 import threading
 import time
 from pathlib import Path
+from types import SimpleNamespace
 from urllib.error import HTTPError
 from urllib.request import urlopen
 
@@ -405,3 +406,91 @@ class TestPipelineIntegration:
         # the stats log and the resource sample.
         assert result.frames == 20
         assert result.stats["frames_delivered"] == 20
+
+
+class TestIdentityReachesTheDashboard:
+    """The seam between identity and what a browser is shown.
+
+    Every stage before this one was proved by its own tests, and the dashboard
+    was proved against observations. Nothing covered the join: identity could
+    work perfectly and the live view could still show anonymous entity ids
+    forever, because ``_live_snapshot`` simply never asked for it.
+    """
+
+    def snapshot_for(self, identity):
+        from vantage.app import _live_snapshot
+        from vantage.core.frame import Frame
+        from vantage.state.contracts import EntityState, MotionState
+
+        entity = EntityState(
+            track_id=7,
+            entity_id="person_7",
+            label="person",
+            motion=MotionState.STATIONARY,
+            speed=0.0,
+            dwell_s=1.0,
+            bearing_deg=None,
+            distance=0.0,
+            age_s=1.0,
+            observed=True,
+        )
+        frame = Frame(
+            image=np.zeros((48, 64, 3), dtype=np.uint8),
+            index=3,
+            source_id="cam",
+            capture_wall=0.0,
+            capture_monotonic=0.0,
+        )
+        return _live_snapshot(
+            frame,
+            SimpleNamespace(delivery_fps=10.0, frames_dropped=0, source_id="cam"),
+            [entity],
+            None,
+            None,
+            None,
+            None,
+            identity,
+            SimpleNamespace(to_dict=lambda: {}),
+        )
+
+    def identity_result(self, *, name: str, resolved: bool):
+        from vantage.identity.contracts import EntityIdentity, IdentityResult
+
+        return IdentityResult(
+            identities=(
+                EntityIdentity(
+                    track_id=7,
+                    entity_id="person_7",
+                    name=name,
+                    similarity=0.62,
+                    votes=3,
+                    resolved=resolved,
+                    attempts=3,
+                ),
+            ),
+            source_id="cam",
+            frame_index=3,
+            capture_wall=0.0,
+        )
+
+    def test_a_committed_name_reaches_the_live_entity(self) -> None:
+        snapshot = self.snapshot_for(self.identity_result(name="alice", resolved=True))
+        assert snapshot.entities[0]["identity"] == "alice"
+
+    def test_a_provisional_name_does_not(self) -> None:
+        """Half-decided is not a name.
+
+        Rendered in a table, a provisional guess is indistinguishable from a
+        committed one, which would defeat the vote threshold entirely.
+        """
+        snapshot = self.snapshot_for(self.identity_result(name="alice", resolved=False))
+        assert snapshot.entities[0]["identity"] is None
+
+    def test_unknown_is_not_shown_as_a_name(self) -> None:
+        snapshot = self.snapshot_for(self.identity_result(name="unknown", resolved=True))
+        assert snapshot.entities[0]["identity"] is None
+
+    def test_the_key_exists_when_identity_is_off(self) -> None:
+        """So the browser can tell "not running" from "running, nobody known"."""
+        snapshot = self.snapshot_for(None)
+        assert snapshot.entities[0]["identity"] is None
