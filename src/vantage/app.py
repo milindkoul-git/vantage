@@ -89,6 +89,7 @@ class RunResult:
     adaptive: dict[str, Any] = field(default_factory=dict)
     events_raised: int = 0
     events_summary: dict[str, Any] = field(default_factory=dict)
+    storage_summary: dict[str, Any] = field(default_factory=dict)
 
     def summary(self) -> str:
         base = (
@@ -179,6 +180,21 @@ class RunResult:
                 # badly configured, and only the count tells the two apart.
                 + f", {detail.get('suppressed', 0)} suppressed by cooldown"
             )
+        if self.storage_summary:
+            detail = self.storage_summary
+            base += (
+                f"\nstorage: {detail.get('events_written', 0)} events, "
+                f"{detail.get('observations_written', 0)} observations written "
+                f"in {detail.get('batches', 0)} batches"
+            )
+            # Dropped events are never folded into a total. Each is the output
+            # of a rule that already decided it mattered.
+            if detail.get("events_dropped"):
+                base += f"; {detail['events_dropped']} EVENTS DROPPED"
+            if detail.get("observations_dropped"):
+                base += f"; {detail['observations_dropped']} observations dropped"
+            if detail.get("write_errors"):
+                base += f"; {detail['write_errors']} write errors"
         degraded = [stat for stat in self.stage_health.values() if stat.get("failures")]
         if degraded:
             # Never folded into a healthy-looking summary. A stage that failed
@@ -263,6 +279,7 @@ def run_ingestion(
     event_engine = _build_event_engine(config)
     latest_events = None
     events_raised = 0
+    store, store_writer, recorder = _build_storage(config)
 
     # One guard per stage. A stage that throws loses its frame, not the run;
     # a stage that throws repeatedly is disabled and said so, loudly.
@@ -443,6 +460,17 @@ def run_ingestion(
                             )
                             if latest_events is not None and latest_events.events:
                                 events_raised += len(latest_events)
+                        # Persistence last, and guarded: a full disk must lose
+                        # rows, never frames.
+                        if recorder is not None:
+                            stages.guard("storage").run(
+                                recorder.record,
+                                state=latest_state,
+                                pose=latest_pose,
+                                activity=latest_activity,
+                                spatial=latest_spatial,
+                                events=latest_events,
+                            )
                     # What one analysed frame actually cost, end to end. The
                     # governor divides this by the interval to get the cost per
                     # *delivered* frame, which is what has to fit the budget.
@@ -543,6 +571,14 @@ def run_ingestion(
             detector.close()
         if estimator is not None:
             estimator.close()
+        if store_writer is not None:
+            # Flushed before the store closes, or the last batch is lost on
+            # every clean shutdown - which would be the most reproducible data
+            # loss the system could have.
+            store_writer.close()
+        if store is not None:
+            _prune_store(store, config)
+            store.close()
 
     final = pipeline.stats()
     result = RunResult(
@@ -567,6 +603,7 @@ def run_ingestion(
         adaptive=(governor.stats.to_dict() if governor is not None else {}),
         events_raised=events_raised,
         events_summary=(dict(event_engine.stats()) if event_engine is not None else {}),
+        storage_summary=(store_writer.stats.to_dict() if store_writer is not None else {}),
         resources=(final_resources.to_dict() if final_resources is not None else {}),
     )
     log.info("run complete", extra={"vantage_fields": {"summary": result.summary()}})
@@ -699,6 +736,49 @@ def _build_governor(config: VantageConfig) -> LoadGovernor | None:
             lower_after_s=adaptive.lower_after_s,
         ),
     )
+
+
+def _build_storage(
+    config: VantageConfig,
+) -> tuple[Any, Any, Any]:
+    """Open the store and its writer, or a triple of ``None`` when disabled."""
+    if not config.storage.enabled:
+        return None, None, None
+    from vantage.storage.factory import build_storage
+
+    return build_storage(config.storage, camera_id=config.source.id or "camera_01")
+
+
+def _prune_store(store: Any, config: VantageConfig) -> None:
+    """Apply retention at shutdown.
+
+    At shutdown rather than continuously: a DELETE over a large table takes a
+    lock, and taking one mid-run to reclaim space is how a storage subsystem
+    starts costing frames. A run that never ends is a real case, so the CLI
+    exposes 'vantage history prune' for it.
+    """
+    import time
+
+    storage = config.storage
+    now = time.time()
+    try:
+        removed: dict[str, int] = {}
+        if storage.retention_days:
+            removed.update(store.prune(now - storage.retention_days * 86400.0))
+        if storage.event_retention_days:
+            # Events are kept longer, so they are pruned against their own
+            # horizon rather than the observation one.
+            cutoff = now - storage.event_retention_days * 86400.0
+            connection = store._require()
+            cursor = connection.execute("DELETE FROM events WHERE timestamp < ?", (cutoff,))
+            removed["events"] = removed.get("events", 0) + cursor.rowcount
+        if any(removed.values()):
+            log.info("retention applied", extra={"vantage_fields": removed})
+    except Exception as exc:
+        log.warning(
+            "retention failed",
+            extra={"vantage_fields": {"error": f"{type(exc).__name__}: {exc}"}},
+        )
 
 
 def _build_event_engine(config: VantageConfig) -> EventEngine | None:

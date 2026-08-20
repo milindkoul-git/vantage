@@ -24,3 +24,11 @@ models/
 *.pt
 *.xml
 *.bin
+
+# Stores written by 'vantage run --store'. The default path is vantage.db in
+# the working directory, so without this a user who enables storage finds a
+# database - potentially containing footage-derived observations - staged for
+# their next commit.
+*.db
+*.db-wal
+*.db-shm

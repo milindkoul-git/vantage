@@ -170,6 +170,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="drop the five head landmarks (nose, eyes, ears) before they are constructed",
     )
     run.add_argument(
+        "--store",
+        action="store_true",
+        help="persist observations and events to a SQLite file (off by default)",
+    )
+    run.add_argument("--store-path", default=None, help="where to write the store")
+    run.add_argument(
         "--no-events",
         action="store_true",
         help="disable event rules, which are otherwise on with tracking",
@@ -303,6 +309,26 @@ def build_parser() -> argparse.ArgumentParser:
     )
     spatial.add_argument("--json", action="store_true")
 
+    history = sub.add_parser(
+        "history", parents=[common], help="query the stored observations and events"
+    )
+    history.add_argument(
+        "action",
+        choices=["events", "observations", "timeline", "stats", "prune"],
+        nargs="?",
+        default="events",
+        help="what to read; 'prune' applies retention now",
+    )
+    history.add_argument("--db", default=None, help="store path (default: storage.path)")
+    history.add_argument("--since", default=None, help="e.g. 30m, 6h, 7d")
+    history.add_argument("--entity", default=None, help="filter by entity id")
+    history.add_argument("--rule", default=None, help="filter by event rule")
+    history.add_argument("--severity", choices=["info", "notice", "alert"], default=None)
+    history.add_argument("--zone", default=None)
+    history.add_argument("--limit", type=int, default=50)
+    history.add_argument("--older-than", default=None, help="prune horizon, e.g. 30d")
+    history.add_argument("--json", action="store_true")
+
     events = sub.add_parser("events", parents=[common], help="show the configured event rules")
     events.add_argument(
         "action",
@@ -381,6 +407,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             return _cmd_spatial(args)
         if command == "events":
             return _cmd_events(args)
+        if command == "history":
+            return _cmd_history(args)
         if command == "discover":
             return _cmd_discover(args)
         # No return after this: parser.error() exits the process, so anything
@@ -685,6 +713,15 @@ def _cmd_discover(args: argparse.Namespace) -> int:
         print(f"\nannotated frame -> {args.save}")
 
     return EXIT_OK
+
+
+def _cmd_history(args: argparse.Namespace) -> int:
+    """Query the store. Rendering lives in storage.query_cli."""
+    from vantage.config.loader import load_config
+    from vantage.storage.query_cli import run
+
+    config = load_config(args.config, overrides=args.overrides)
+    return run(args, default_path=config.storage.path)
 
 
 def _cmd_events(args: argparse.Namespace) -> int:
@@ -1150,6 +1187,7 @@ def _flag_overrides(args: argparse.Namespace) -> list[str]:
         ("tracking.min_hits", args.track_min_hits),
         ("tracking.max_lost_s", args.track_max_lost),
         ("pose.model", args.pose_model),
+        ("storage.path", args.store_path),
         ("pose.interval", args.pose_interval),
         ("pose.max_persons", args.pose_max_persons),
         # The logging flags must go through the config too, or the reload inside
@@ -1188,6 +1226,8 @@ def _flag_overrides(args: argparse.Namespace) -> list[str]:
         overrides.append("spatial.enabled=false")
     if args.no_events:
         overrides.append("events.enabled=false")
+    if args.store:
+        overrides.append("storage.enabled=true")
     if args.track or args.pose:
         # --track implies --detect rather than erroring, because a tracker with
         # no detector cannot do anything at all; requiring both flags would be

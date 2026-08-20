@@ -337,6 +337,47 @@ runtime; the remaining 19 exercise real weights and deselect cleanly.
 
 ---
 
+## 2i. What Phase 8 delivers
+
+Observation and event storage - the history that makes everything above
+answerable after the fact.
+
+**SQLite**, chosen on the same grounds as every dependency decision here: it is
+in the standard library, needs no server, and handles the load. `Store` is a
+Protocol, so Postgres can be added for the multi-camera phase without touching
+anything that writes.
+
+**The run loop never writes to disk.** It enqueues; a background thread batches
+and commits. A slow disk must cost rows, never frames - a frame lost at the
+camera is lost to every stage.
+
+**Two queues, two policies**, and the difference is the design:
+
+| | Observations | Events |
+|---|---|---|
+| Volume | ~120 rows/second | a dozen a day |
+| Sampled? | yes, `observation_interval` | **never** |
+| On overflow | dropped, counted, warned | dropped, counted, **logged as ERROR** |
+| Retention | 30 days | 365 days |
+
+A single shared queue was the first design and is wrong for exactly that reason:
+under load you lose whatever arrived when it was full, and observations arrive a
+hundred times more often than events.
+
+**Volume is controlled by sampling, not by overflow.** Chosen sampling is
+reproducible; what a full queue discards depends on when the disk was busy.
+
+**Searchable, with a schema version from day one.** Time, entity, rule,
+severity and zone are all indexed; `vantage history` queries them. The
+`schema_version` table looks like ceremony for a schema nobody has changed - and
+it is the one thing impossible to add later, because by then there are
+databases in the field with no version marker.
+
+**804 tests**, 785 of which need no camera, no model file and no inference
+runtime.
+
+---
+
 ## 3. Quick start
 
 Requires Python 3.11+ (developed on 3.13.1).
@@ -525,6 +566,30 @@ events:
 Events appear on the HUD coloured by severity and in the run summary with the
 suppression count.
 
+### History (Phase 8)
+
+Off by default - a tool that silently created a growing database would be a
+surprise. Turn it on per run:
+
+```bash
+vantage run --source webcam:0 --track --pose --store
+```
+
+Then query it, while the run is still going if you like (WAL means a reader
+never blocks the writer):
+
+```bash
+vantage history stats                          # rows, span, size on disk
+vantage history events --since 1h              # what happened
+vantage history events --severity alert        # only the ones that matter
+vantage history timeline --entity person_3     # one entity, oldest first
+vantage history observations --zone till --since 30m
+vantage history prune --older-than 30d
+```
+
+`prune` refuses to run without an explicit horizon, because the wrong guess
+deletes data.
+
 ### One-click launch (Windows)
 
 `webcam.bat` in the repository root runs the live pipeline without typing the
@@ -698,6 +763,14 @@ vantage/
 ├─ state/         Phase 4: what a tracked entity is doing, whatever it is
 │  ├─ contracts.py   MotionState, EntityState, the observation record
 │  └─ estimator.py   hysteresis, dwell timing, path length; no model, no weights
+│
+├─ storage/       Phase 8: the history, in SQLite
+│  ├─ contracts.py   StoredEvent, StoredObservation, Query, the Store Protocol
+│  ├─ schema.py      DDL, indexes, pragmas, schema versioning
+│  ├─ sqlite_store.py  batched writes, indexed reads, retention
+│  ├─ writer.py      background thread; separate queues for events and rows
+│  ├─ recorder.py    the seam between pipeline output and database columns
+│  └─ query_cli.py   'vantage history'
 │
 ├─ events/        Phase 7: what happened, once - the discrete reduction
 │  ├─ contracts.py   Event, Severity, the storable record
@@ -1457,6 +1530,35 @@ Two configuration findings are worth recording, because both were wrong first:
   unused-ignore error on Linux. It found one genuine dead statement before
   being turned off, which is fixed.
 
+### Storage found two bugs that unit tests structurally could not
+
+Both surfaced on the first run that actually stored something, and neither was
+the kind of mistake a unit test was ever going to catch.
+
+**A SQLite connection crossed threads.** The store was created on the caller's
+thread and used from the writer's, which SQLite refuses outright: *"SQLite
+objects created in a thread can only be used in that same thread."* Unit tests
+did not catch it because unit tests do not cross threads. The tempting one-word
+fix, `check_same_thread=False`, is wrong - it silences the guard without making
+anything safe. Connections are now per-thread, which is genuinely safe, and WAL
+is what lets them coexist.
+
+**An ISO timestamp went into a numeric column.** Phase 7's `to_record()` renders
+the timestamp as an ISO string, which is right for JSON and wrong for a REAL
+column that range queries sort on. SQLite is dynamically typed and accepted it
+without complaint; the first query that formatted one failed with *"'str' object
+cannot be interpreted as an integer"*.
+
+The lesson is the same in both: export shape and storage shape are different
+concerns. `to_record()` stayed as it was - it is the API-facing form - and the
+recorder now builds database rows from typed fields. Both have regression tests
+that say why they exist.
+
+A third, smaller one: `counts()` reported **4096 bytes for five hundred rows** -
+the size of an empty database - because under WAL the data lives in a sidecar
+file until checkpoint. Anyone using that figure to decide whether to prune would
+have concluded there was nothing there.
+
 ### CI gates on the ground-truth harnesses
 
 `.github/workflows/ci.yml` runs on Linux and Windows, Python 3.11 and 3.13. As
@@ -1701,8 +1803,8 @@ not a fixed plan:
 | 5 | Temporal activity recognition | Done |
 | 6 | Spatial & interaction understanding | Done |
 | 7 | Event engine | Done |
-| 8 | Observation & event storage | Next |
-| 9 | Visualization / dashboard | |
+| 8 | Observation & event storage | Done |
+| 9 | Visualization / dashboard | Next |
 | 10 | Identity & enrolment | Optional - see below |
 | 11 | Advanced analytics | |
 | 12 | Optimization / multi-camera scaling | |

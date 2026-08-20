@@ -694,6 +694,77 @@ class EventsConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class StorageConfig:
+    """Persisting observations and events to a SQLite file.
+
+    Off by default. A tool that silently created a growing database in whatever
+    directory it was launched from would be a surprise, and an unwanted one on a
+    machine where disk is the constraint. Turn it on with ``--store``.
+    """
+
+    enabled: bool = False
+    path: str = "vantage.db"
+
+    store_observations: bool = True
+    """Whether to record continuous per-entity state as well as events.
+
+    Events alone are tiny - a camera might produce a dozen a day. Observations
+    are what make the history searchable, and also what fills the disk."""
+
+    observation_interval: int = 15
+    """Record observations on one analysed frame in N.
+
+    At 30 fps with four entities, every frame is 120 rows a second - ten million
+    a day, nearly all identical to their predecessor, because entity state
+    changes on the scale of seconds. Sampling deliberately is reproducible;
+    letting the queue overflow is not, because what is lost then depends on when
+    the disk happened to be busy."""
+
+    batch_size: int = 200
+    flush_interval_s: float = 2.0
+    """Rows are committed when either is reached. One transaction per batch is
+    the difference between hundreds of rows a second and tens of thousands."""
+
+    observation_queue: int = 5000
+    event_queue: int = 1000
+    """Separate queues on purpose: a flood of observations must never crowd out
+    an event, and observations arrive a hundred times more often."""
+
+    retention_days: float = 30.0
+    event_retention_days: float = 365.0
+    """Events are kept far longer than observations because they are rare and
+    they are the record of what actually happened. Zero disables pruning, which
+    on a long-running camera means the disk fills eventually."""
+
+    def __post_init__(self) -> None:
+        if not self.path.strip():
+            raise ConfigError("storage.path must not be empty")
+        if self.observation_interval < 1:
+            raise ConfigError("storage.observation_interval must be >= 1")
+        if self.batch_size < 1:
+            raise ConfigError("storage.batch_size must be >= 1")
+        if self.flush_interval_s <= 0:
+            raise ConfigError("storage.flush_interval_s must be positive")
+        for name in ("observation_queue", "event_queue"):
+            if getattr(self, name) < 1:
+                raise ConfigError(f"storage.{name} must be >= 1")
+        for name in ("retention_days", "event_retention_days"):
+            if getattr(self, name) < 0:
+                raise ConfigError(f"storage.{name} must be >= 0 (0 disables pruning)")
+        if (
+            self.retention_days
+            and self.event_retention_days
+            and self.event_retention_days < self.retention_days
+        ):
+            raise ConfigError(
+                f"storage.event_retention_days ({self.event_retention_days}) is below "
+                f"storage.retention_days ({self.retention_days}): events are the rare, "
+                "already-filtered record of what happened, so discarding them sooner "
+                "than the observations around them is almost certainly a mistake"
+            )
+
+
+@dataclass(frozen=True, slots=True)
 class DisplayConfig:
     """The Phase 1 diagnostic viewer.
 
@@ -813,6 +884,7 @@ class VantageConfig:
     activity: ActivityConfig = field(default_factory=ActivityConfig)
     spatial: SpatialConfig = field(default_factory=SpatialConfig)
     events: EventsConfig = field(default_factory=EventsConfig)
+    storage: StorageConfig = field(default_factory=StorageConfig)
     display: DisplayConfig = field(default_factory=DisplayConfig)
 
     def __post_init__(self) -> None:

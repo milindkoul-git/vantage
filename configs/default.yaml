@@ -233,6 +233,34 @@ events:
   # teaches its reader to ignore it. Suppressed firings are counted and
   # reported, never hidden.
 
+storage:
+  # Persisting observations and events to a SQLite file. OFF by default: a tool
+  # that silently created a growing database in whatever directory it was
+  # launched from would be a surprise, and an unwanted one where disk is the
+  # constraint. Turn it on with --store, and query it with 'vantage history'.
+  enabled: false
+  path: vantage.db
+
+  store_observations: true   # events alone are tiny; observations fill the disk
+  observation_interval: 15   # record one analysed frame in N
+  batch_size: 200            # rows per transaction
+  flush_interval_s: 2.0      # or commit after this long, whichever comes first
+  observation_queue: 5000    # separate queues: a flood of observations must
+  event_queue: 1000          # never crowd out an event
+  retention_days: 30.0       # 0 disables pruning (and the disk fills eventually)
+  event_retention_days: 365.0
+  #
+  # observation_interval is the lever that matters. At 30 fps with four
+  # entities, recording every frame is 120 rows a second - ten million a day,
+  # nearly all identical to their predecessor, because entity state changes on
+  # the scale of seconds. Sampling deliberately is reproducible; letting the
+  # queue overflow is not, because what is lost then depends on when the disk
+  # happened to be busy.
+  #
+  # Events are never sampled and never dropped quietly: a dropped event is
+  # logged as an ERROR, because each one is the output of a rule that already
+  # decided it was worth someone's attention.
+
 display:
   enabled: true
   window_name: "Vantage - Ingestion"
