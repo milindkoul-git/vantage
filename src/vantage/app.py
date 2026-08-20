@@ -35,6 +35,7 @@ from vantage.viz.hud import HudRenderer
 from vantage.viz.overlay import (
     draw_activities,
     draw_detections,
+    draw_identities,
     draw_poses,
     draw_relations,
     draw_tracks,
@@ -89,6 +90,7 @@ class RunResult:
     adaptive: dict[str, Any] = field(default_factory=dict)
     events_raised: int = 0
     events_summary: dict[str, Any] = field(default_factory=dict)
+    identity_summary: dict[str, Any] = field(default_factory=dict)
     storage_summary: dict[str, Any] = field(default_factory=dict)
 
     def summary(self) -> str:
@@ -195,6 +197,16 @@ class RunResult:
                 base += f"; {detail['observations_dropped']} observations dropped"
             if detail.get("write_errors"):
                 base += f"; {detail['write_errors']} write errors"
+        if self.identity_summary:
+            detail = self.identity_summary
+            base += (
+                f"\nidentity: {detail.get('enrolled', 0)} enrolled, "
+                f"{detail.get('attempts', 0)} comparisons, "
+                # "named", not "resolved". A track that settled on unknown is
+                # resolved too, and reporting it as unresolved would read as a
+                # failure when it is the system correctly declining to guess.
+                f"{detail.get('identified', 0)} named"
+            )
         degraded = [stat for stat in self.stage_health.values() if stat.get("failures")]
         if degraded:
             # Never folded into a healthy-looking summary. A stage that failed
@@ -280,6 +292,8 @@ def run_ingestion(
     latest_events = None
     events_raised = 0
     store, store_writer, recorder = _build_storage(config)
+    identity_engine, identity_store = _build_identity(config)
+    latest_identity = None
     live_feed, dashboard = _build_dashboard(config, store)
 
     # One guard per stage. A stage that throws loses its frame, not the run;
@@ -450,6 +464,16 @@ def run_ingestion(
                                         }
                                     },
                                 )
+                        # Identity attaches a name to an entity that already
+                        # exists. Nothing above depends on it, which is the seam
+                        # the spec asked for.
+                        if identity_engine is not None:
+                            latest_identity = stages.guard("identity").run(
+                                identity_engine.update,
+                                frame,
+                                latest_tracking,
+                                default=latest_identity,
+                            )
                         if event_engine is not None:
                             latest_events = stages.guard("events").run(
                                 event_engine.update,
@@ -471,6 +495,7 @@ def run_ingestion(
                                 activity=latest_activity,
                                 spatial=latest_spatial,
                                 events=latest_events,
+                                identity=latest_identity,
                             )
                     # What one analysed frame actually cost, end to end. The
                     # governor divides this by the interval to get the cost per
@@ -529,6 +554,8 @@ def run_ingestion(
                     image = draw_relations(image, latest_spatial, latest_tracking)
                 if latest_activity is not None and latest_tracking is not None:
                     image = draw_activities(image, latest_activity, latest_tracking)
+                if latest_identity is not None and latest_tracking is not None:
+                    image = draw_identities(image, latest_identity, latest_tracking)
                 if live_feed is not None:
                     live_feed.publish(
                         image,
@@ -540,6 +567,7 @@ def run_ingestion(
                             latest_activity,
                             latest_spatial,
                             latest_events,
+                            latest_identity,
                             stages,
                         ),
                     )
@@ -603,6 +631,8 @@ def run_ingestion(
             store_writer.close()
         if dashboard is not None:
             dashboard.stop()
+        if identity_store is not None:
+            identity_store.close()
         if store is not None:
             _prune_store(store, config)
             store.close()
@@ -630,6 +660,7 @@ def run_ingestion(
         adaptive=(governor.stats.to_dict() if governor is not None else {}),
         events_raised=events_raised,
         events_summary=(dict(event_engine.stats()) if event_engine is not None else {}),
+        identity_summary=(dict(identity_engine.stats()) if identity_engine is not None else {}),
         storage_summary=(store_writer.stats.to_dict() if store_writer is not None else {}),
         resources=(final_resources.to_dict() if final_resources is not None else {}),
     )
@@ -765,6 +796,20 @@ def _build_governor(config: VantageConfig) -> LoadGovernor | None:
     )
 
 
+def _build_identity(config: VantageConfig) -> tuple[Any, Any]:
+    """Construct identity resolution, or ``(None, None)`` when it is off.
+
+    Off unless asked for. With nobody enrolled it still runs and reports every
+    face as unknown, which is the truthful answer rather than a reason to
+    silently disable itself.
+    """
+    if not (config.identity.enabled and config.tracking.enabled):
+        return None, None
+    from vantage.identity.factory import build_identity_engine
+
+    return build_identity_engine(config.identity)
+
+
 def _build_dashboard(config: VantageConfig, store: Any) -> tuple[Any, Any]:
     """Start the dashboard, or return ``(None, None)`` when it is disabled.
 
@@ -798,6 +843,7 @@ def _live_snapshot(
     activity: Any,
     spatial: Any,
     events: Any,
+    identity: Any,
     stage_registry: Any,
 ) -> Any:
     """Assemble what the dashboard shows about right now.
@@ -815,6 +861,10 @@ def _live_snapshot(
         else {}
     )
     zones = {e.track_id: list(e.zone_names) for e in spatial} if spatial is not None else {}
+    # Only committed names travel to the browser. A provisional guess rendered
+    # in a table looks exactly like a decided one, and the whole point of the
+    # vote threshold is that a single face crop is not yet an answer.
+    names = {i.track_id: i.name for i in identity if i.known} if identity is not None else {}
 
     entities = []
     if state is not None:
@@ -828,6 +878,7 @@ def _live_snapshot(
                     "posture": postures.get(entity.track_id),
                     "activities": activities.get(entity.track_id, []),
                     "zones": zones.get(entity.track_id, []),
+                    "identity": names.get(entity.track_id),
                 }
             )
 

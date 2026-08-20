@@ -25,6 +25,7 @@ from vantage.perception.labels import get_label_set
 _YOLOX_RELEASE = "https://github.com/Megvii-BaseDetection/YOLOX/releases/download/0.1.1rc0"
 _ONNX_COMMUNITY = "https://huggingface.co/onnx-community"
 _MMPOSE_SDK = "https://download.openmmlab.com/mmpose/v1/projects/rtmposev1/onnx_sdk"
+_OPENCV_HF = "https://huggingface.co/opencv"
 
 
 @dataclass(frozen=True, slots=True)
@@ -222,6 +223,34 @@ CATALOG: dict[str, ModelSpec] = {
         source="https://github.com/open-mmlab/mmpose/tree/main/projects/rtmpose",
         description="More accurate RTMPose. On the iGPU it costs 0.5 ms more than -t.",
         task="pose",
+    ),
+    "yunet-face": ModelSpec(
+        key="yunet-face",
+        filename="face_detection_yunet_2023mar.onnx",
+        url=f"{_OPENCV_HF}/face_detection_yunet/resolve/main/face_detection_yunet_2023mar.onnx",
+        sha256="8f2383e4dd3cfbb4553ea8718107fc0423210dc964f9f4280604804ed2552fa4",
+        size_bytes=232_589,
+        adapter="yunet",
+        input_size=(320, 320),
+        label_set="face",
+        license="MIT",
+        source="https://github.com/opencv/opencv_zoo/tree/main/models/face_detection_yunet",
+        description="Face detector with 5 landmarks. Needed to align a crop for SFace.",
+        task="face-detect",
+    ),
+    "sface": ModelSpec(
+        key="sface",
+        filename="face_recognition_sface_2021dec.onnx",
+        url=f"{_OPENCV_HF}/face_recognition_sface/resolve/main/face_recognition_sface_2021dec.onnx",
+        sha256="0ba9fbfa01b5270c96627c4ef784da859931e02f04419c829e83484087c34e79",
+        size_bytes=38_696_353,
+        adapter="sface",
+        input_size=(112, 112),
+        label_set="face",
+        license="Apache-2.0",
+        source="https://github.com/opencv/opencv_zoo/tree/main/models/face_recognition_sface",
+        description="Face embedding, 128-d. Apache-2.0, unlike ArcFace weights.",
+        task="face-embed",
     ),
 }
 

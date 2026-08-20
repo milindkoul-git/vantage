@@ -804,6 +804,67 @@ class DashboardConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class IdentityConfig:
+    """Optional identity resolution. Off by default, and deliberately so.
+
+    This is the only subsystem that answers *who*. It never runs unless it is
+    turned on, it never enrols anyone from the live pipeline, and with nobody
+    enrolled it reports every face as unknown - which is the truth.
+    """
+
+    enabled: bool = False
+    path: str = "identities.db"
+    """Its own database, separate from the observation store, so biometric
+    templates can be backed up, permissioned and deleted on their own terms."""
+
+    detector_model: str = "yunet-face"
+    embedder_model: str = "sface"
+    model_dir: str = "models"
+    allow_download: bool = True
+    face_score: float = 0.7
+
+    threshold: float = 0.363
+    """Cosine similarity for a match. The figure OpenCV Zoo publishes for these
+    weights; inherited rather than measured, because verifying it properly needs
+    a labelled face set this project has no business collecting."""
+
+    margin: float = 0.05
+    """How far ahead of the runner-up the winner must be. Without it, two people
+    who score nearly the same are separated by whichever scored 0.001 higher,
+    which is how a system confidently uses the wrong name."""
+
+    interval: int = 10
+    min_votes: int = 3
+    """Agreeing observations before a name is committed. One face crop is one
+    angle at one moment; committing on it means a badly timed frame names
+    someone for the rest of their time on camera."""
+
+    max_attempts: int = 25
+    reverify_interval: int = 150
+    """Steps between re-checking a resolved track. The tracker can swap two
+    people who cross, and nothing else downstream would ever notice."""
+
+    min_face_fraction: float = 0.04
+
+    def __post_init__(self) -> None:
+        if not self.path.strip():
+            raise ConfigError("identity.path must not be empty")
+        if not -1.0 <= self.threshold <= 1.0:
+            raise ConfigError("identity.threshold must be in [-1, 1]")
+        if self.margin < 0:
+            raise ConfigError("identity.margin must be >= 0")
+        for name in ("interval", "min_votes", "max_attempts"):
+            if getattr(self, name) < 1:
+                raise ConfigError(f"identity.{name} must be >= 1")
+        if self.reverify_interval < 0:
+            raise ConfigError("identity.reverify_interval must be >= 0 (0 disables)")
+        if not 0.0 <= self.face_score <= 1.0:
+            raise ConfigError("identity.face_score must be in [0, 1]")
+        if not 0.0 <= self.min_face_fraction <= 1.0:
+            raise ConfigError("identity.min_face_fraction must be in [0, 1]")
+
+
+@dataclass(frozen=True, slots=True)
 class DisplayConfig:
     """The Phase 1 diagnostic viewer.
 
@@ -925,6 +986,7 @@ class VantageConfig:
     events: EventsConfig = field(default_factory=EventsConfig)
     storage: StorageConfig = field(default_factory=StorageConfig)
     dashboard: DashboardConfig = field(default_factory=DashboardConfig)
+    identity: IdentityConfig = field(default_factory=IdentityConfig)
     display: DisplayConfig = field(default_factory=DisplayConfig)
 
     def __post_init__(self) -> None:
@@ -942,6 +1004,13 @@ class VantageConfig:
                 f"app.adaptive.max_interval ({self.app.adaptive.max_interval}) is below "
                 f"detection.interval ({self.detection.interval}): the governor would be "
                 "asked to shed load below the floor it was told to start at"
+            )
+        if self.identity.enabled and not self.tracking.enabled:
+            raise ConfigError(
+                "identity.enabled requires tracking.enabled: identity resolves an "
+                "existing anonymous entity into a name, and without tracks there is "
+                "no entity to resolve. This is the seam the spec asked for - identity "
+                "attaches to tracking, and tracking never depends on identity."
             )
         if self.pose.enabled and not self.tracking.enabled:
             raise ConfigError(

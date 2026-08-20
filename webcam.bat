@@ -10,6 +10,9 @@ REM      webcam.bat pose       same, said explicitly
 REM      webcam.bat activity   pose plus activity recognition, tuned to demo
 REM      webcam.bat objects    365-class detection + tracking, no pose
 REM      webcam.bat plain      detection only, no tracking and no pose
+REM      webcam.bat identity   tracking plus face identification (opt-in)
+REM      webcam.bat enroll     add a person to the identity gallery
+REM      webcam.bat who        list who is enrolled
 REM      webcam.bat checks     no camera: score the tracker and activity rules
 REM
 REM  The detection modes use different detectors on purpose, and the reason is
@@ -62,6 +65,21 @@ if /I "%~1"=="plain" (
     shift
     goto parse
 )
+if /I "%~1"=="identity" (
+    set "MODE=identity"
+    shift
+    goto parse
+)
+if /I "%~1"=="enroll" (
+    set "MODE=enroll"
+    shift
+    goto parse
+)
+if /I "%~1"=="who" (
+    set "MODE=who"
+    shift
+    goto parse
+)
 if /I "%~1"=="checks" (
     set "MODE=checks"
     shift
@@ -99,6 +117,11 @@ if /I "%MODE%"=="plain" (
     set "MODE_INTERVAL=1"
     set "MODE_FLAGS=--detect"
 )
+if /I "%MODE%"=="identity" (
+    set "MODE_MODEL=yolox-tiny"
+    set "MODE_INTERVAL=1"
+    set "MODE_FLAGS=--track --identify"
+)
 
 if not defined VANTAGE_SOURCE   set "VANTAGE_SOURCE=webcam:0"
 if not defined VANTAGE_DEVICE   set "VANTAGE_DEVICE=gpu"
@@ -125,6 +148,8 @@ if not exist "%PYTHON%" (
 )
 
 if /I "%MODE%"=="checks" goto checks
+if /I "%MODE%"=="enroll" goto enroll
+if /I "%MODE%"=="who" goto who
 
 REM Echo the real command rather than the defaults: appended arguments are
 REM allowed to override, and a banner built from the variables above would
@@ -141,11 +166,60 @@ if /I "%MODE%"=="activity" (
     echo   Posture reads "unknown" unless your legs are visible; that is the
     echo   correct answer, not a fault, and the HUD prints the reason.
 )
+if /I "%MODE%"=="identity" (
+    echo.
+    echo   Names appear over people the system recognises. With nobody
+    echo   enrolled, everyone is "unknown" - which is the truth, not a fault.
+    echo   Enrol first:  webcam.bat enroll --name alice --consent
+    echo.
+    echo   A name is shown only after several agreeing looks, so expect a
+    echo   second or two of "identifying" before it settles.
+)
 echo.
 echo Press q or Esc in the video window to stop, h for the HUD, s for a snapshot.
 echo.
 
 "%PYTHON%" -m vantage %VARGS%
+set "RESULT=%ERRORLEVEL%"
+goto finish
+
+:enroll
+REM Deliberately does NOT supply --consent. Everything else here is a
+REM convenience - the source, the model paths - but the consent flag is the
+REM one thing that makes this an enrolment rather than a capture, and a
+REM launcher that passed it silently would turn a statement about a person
+REM into a property of the shortcut you happened to double-click.
+echo %ARGS% | findstr /I /C:"--consent" >nul
+if errorlevel 1 (
+    echo.
+    echo   Enrolment needs --consent, and this script will not add it for you.
+    echo.
+    echo   The flag asserts that the person being enrolled knows about it and
+    echo   agreed to it. That is a statement about a person, so it has to come
+    echo   from you rather than from a shortcut.
+    echo.
+    echo       webcam.bat enroll --name alice --consent
+    echo       webcam.bat enroll --name bob   --consent --samples 12
+    echo.
+    echo   Stored: a 128-number face template. No photograph is written to
+    echo   disk. Remove one later with:
+    echo       .venv\Scripts\python.exe -m vantage identity forget --name alice
+    echo.
+    set "RESULT=2"
+    goto finish
+)
+echo [enroll] vantage identity enroll --source %VANTAGE_SOURCE%%ARGS%
+echo.
+echo   Look at the camera, straight on and well lit. Move your head a little
+echo   between captures - eight copies of one pose generalise no better than
+echo   one capture does.
+echo.
+"%PYTHON%" -m vantage identity enroll --source %VANTAGE_SOURCE%%ARGS%
+set "RESULT=%ERRORLEVEL%"
+goto finish
+
+:who
+"%PYTHON%" -m vantage identity list%ARGS%
 set "RESULT=%ERRORLEVEL%"
 goto finish
 

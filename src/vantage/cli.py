@@ -170,6 +170,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="drop the five head landmarks (nose, eyes, ears) before they are constructed",
     )
     run.add_argument(
+        "--identify",
+        action="store_true",
+        help="resolve tracked people against enrolled identities (implies --track)",
+    )
+    run.add_argument(
         "--dashboard",
         action="store_true",
         help="serve a local web dashboard with a live view (loopback only)",
@@ -320,6 +325,38 @@ def build_parser() -> argparse.ArgumentParser:
     )
     spatial.add_argument("--json", action="store_true")
 
+    identity = sub.add_parser(
+        "identity",
+        parents=[common],
+        help="enrol, list, revoke and audit identities (optional, off by default)",
+    )
+    identity.add_argument(
+        "action",
+        choices=["list", "enroll", "forget", "audit", "verify"],
+        nargs="?",
+        default="list",
+    )
+    identity.add_argument("--name", default=None, help="who to enrol, forget or filter by")
+    identity.add_argument(
+        "--consent",
+        action="store_true",
+        help=(
+            "affirm that the person being enrolled knows about it and agreed to it. "
+            "Required for enrolment: this system will not add a face to its gallery "
+            "on anyone's behalf"
+        ),
+    )
+    identity.add_argument(
+        "--image", action="append", default=[], help="enrol or verify from image files"
+    )
+    identity.add_argument("--source", default="webcam:0", help="camera to enrol from")
+    identity.add_argument("--samples", type=int, default=8)
+    identity.add_argument("--note", default="", help="free-text note stored with the enrolment")
+    identity.add_argument("--since", default=None, help="audit window, e.g. 24h")
+    identity.add_argument("--limit", type=int, default=50)
+    identity.add_argument("--db", default=None, help="identity store path")
+    identity.add_argument("--json", action="store_true")
+
     dashboard = sub.add_parser(
         "dashboard",
         parents=[common],
@@ -431,6 +468,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             return _cmd_history(args)
         if command == "dashboard":
             return _cmd_dashboard(args)
+        if command == "identity":
+            return _cmd_identity(args)
         if command == "discover":
             return _cmd_discover(args)
         # No return after this: parser.error() exits the process, so anything
@@ -735,6 +774,14 @@ def _cmd_discover(args: argparse.Namespace) -> int:
         print(f"\nannotated frame -> {args.save}")
 
     return EXIT_OK
+
+
+def _cmd_identity(args: argparse.Namespace) -> int:
+    """Enrol, list, revoke and audit identities."""
+    from vantage.config.loader import load_config
+    from vantage.identity.cli import run
+
+    return run(args, load_config(args.config, overrides=args.overrides))
 
 
 def _cmd_dashboard(args: argparse.Namespace) -> int:
@@ -1258,7 +1305,7 @@ def _flag_overrides(args: argparse.Namespace) -> list[str]:
         overrides.append("display.enabled=false")
     if args.no_hud:
         overrides.append("display.hud=false")
-    if args.detect or args.track or args.pose:
+    if args.detect or args.track or args.pose or args.identify:
         overrides.append("detection.enabled=true")
     if args.pose:
         # Pose is top-down and takes its boxes from tracks, so --pose implies
@@ -1282,7 +1329,11 @@ def _flag_overrides(args: argparse.Namespace) -> list[str]:
         overrides.append("storage.enabled=true")
     if args.dashboard:
         overrides.append("dashboard.enabled=true")
-    if args.track or args.pose:
+    if args.identify:
+        # Identity resolves an existing anonymous entity, so it needs tracks -
+        # the same implication --track has on --detect.
+        overrides.append("identity.enabled=true")
+    if args.track or args.pose or args.identify:
         # --track implies --detect rather than erroring, because a tracker with
         # no detector cannot do anything at all; requiring both flags would be
         # pedantry with no failure mode to protect against.

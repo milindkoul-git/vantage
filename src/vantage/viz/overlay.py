@@ -23,6 +23,7 @@ from vantage.perception.contracts import Detection, DetectionResult
 if TYPE_CHECKING:  # tracking is optional at render time; the overlay must not
     # make it an import-time requirement for plain detection display.
     from vantage.activity.contracts import ActivityResult
+    from vantage.identity.contracts import IdentityResult
     from vantage.pose.contracts import PoseResult
     from vantage.spatial.contracts import SpatialResult, Zone
     from vantage.tracking.contracts import Track, TrackingResult
@@ -436,4 +437,39 @@ def draw_relations(
             color,
             scale,
         )
+    return canvas
+
+
+def draw_identities(
+    image: np.ndarray,
+    result: IdentityResult,
+    tracking: TrackingResult,
+    *,
+    show_unresolved: bool = False,
+) -> np.ndarray:
+    """Label identified entities with their name, above the box.
+
+    Same ownership contract as :func:`draw_detections`.
+
+    Only **resolved, known** identities are drawn by default. A provisional
+    guess mid-vote is not a fact about who someone is, and putting a name on
+    screen is exactly the point at which a viewer stops treating it as one.
+    Unknown entities keep their anonymous id, which they already have.
+    """
+    canvas = image if image.flags.writeable else image.copy()
+    scale = max(0.4, min(0.7, canvas.shape[1] / 1600.0))
+    boxes = {track.track_id: track.box for track in tracking.tracks}
+
+    for item in result:
+        box = boxes.get(item.track_id)
+        if box is None:
+            continue
+        if item.known:
+            label, color = f"{item.name} {item.similarity:.2f}", (120, 220, 120)
+        elif show_unresolved and not item.resolved:
+            label, color = "identifying...", (170, 170, 170)
+        else:
+            continue
+        x1, y1, _, _ = box.to_int()
+        _draw_label(canvas, label, (x1, max(0, y1 - 22)), color, scale)
     return canvas

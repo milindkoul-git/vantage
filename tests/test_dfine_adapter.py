@@ -278,11 +278,19 @@ class TestCatalogIntegration:
         models existed - would either fail on them or, worse, tempt someone to
         register a pose adapter there and get a type error at the first frame.
         """
+        from vantage.identity.factory import FACE_ADAPTERS
         from vantage.pose.factory import _ADAPTERS as POSE_ADAPTERS
 
         for spec in CATALOG.values():
             if spec.task == "pose":
                 assert spec.adapter in POSE_ADAPTERS
+            elif spec.task in FACE_ADAPTERS.values():
+                # Face models are driven by OpenCV's own wrappers rather than a
+                # vantage adapter, so they have no entry in either registry. The
+                # check that matters for them is that the adapter name and the
+                # task agree - a "yunet" entry claiming to be a face embedder
+                # would be loaded into the wrong cv2 class.
+                assert FACE_ADAPTERS.get(spec.adapter) == spec.task
             else:
                 assert get_adapter(spec.adapter) is not None
             assert len(spec.labels) > 0

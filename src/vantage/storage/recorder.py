@@ -21,7 +21,7 @@ a rule.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from vantage.activity.contracts import ActivityResult
 from vantage.events.contracts import Event, EventResult
@@ -30,6 +30,9 @@ from vantage.spatial.contracts import SpatialResult
 from vantage.state.contracts import StateResult
 from vantage.storage.schema import wrap_list
 from vantage.storage.writer import StoreWriter
+
+if TYPE_CHECKING:
+    from vantage.identity.contracts import IdentityResult
 
 
 class Recorder:
@@ -67,6 +70,7 @@ class Recorder:
         activity: ActivityResult | None = None,
         spatial: SpatialResult | None = None,
         events: EventResult | None = None,
+        identity: IdentityResult | None = None,
     ) -> int:
         """Enqueue this frame's records. Returns how many were accepted."""
         accepted = 0
@@ -103,10 +107,19 @@ class Recorder:
             if spatial is not None
             else {}
         )
+        # The identity column has been present and NULL since Phase 8. This is
+        # the line that fills it, and it is the only change storage needed to
+        # accommodate an identity layer - which was the point of putting the
+        # column there before anything could write to it.
+        names = (
+            {item.track_id: item.name for item in identity if item.known}
+            if identity is not None
+            else {}
+        )
 
         for entity in state:
             accepted += self._writer.add_observation(
-                self._observation(entity, postures, activities, zones, state)
+                self._observation(entity, postures, activities, zones, names, state)
             )
         return accepted
 
@@ -145,16 +158,17 @@ class Recorder:
         postures: dict[int, str],
         activities: dict[int, tuple[str, ...]],
         zones: dict[int, tuple[str, ...]],
+        names: dict[int, str],
         state: StateResult,
     ) -> dict[str, Any]:
         return {
             "timestamp": state.capture_wall,
             "camera_id": self._camera_id,
             "entity_id": entity.entity_id,
-            # Present and always None - the seam every phase since 4 has left,
-            # so an identity layer adds a resolver rather than a migration over
-            # a table with ten million rows in it.
-            "identity": None,
+            # Filled when identity resolution is running and has committed a
+            # name for this entity; None otherwise, which is every deployment
+            # that never turns it on.
+            "identity": names.get(entity.track_id),
             "entity_type": entity.label,
             "motion": entity.motion.value,
             "speed": round(entity.speed, 4),

@@ -166,16 +166,22 @@ function renderEntities(entities) {
     return;
   }
   host.className = "";
+  // The Who column appears only when identity is running and has committed to
+  // at least one name. A column of dashes on every deployment that leaves
+  // identity off - which is the default - would suggest the feature is broken
+  // rather than absent.
+  const named = entities.some((e) => e.identity);
   const rows = entities.map((e) => `
     <tr>
       <td>${escapeHtml(e.entity_id)}</td>
+      ${named ? `<td class="entity">${escapeHtml(e.identity || "—")}</td>` : ""}
       <td class="entity">${escapeHtml(e.label || "")}</td>
       <td>${escapeHtml([e.motion, e.posture, (e.activities || []).join(", ")]
             .filter(Boolean).join(" &middot; "))}</td>
       <td class="entity">${escapeHtml((e.zones || []).join(", "))}</td>
     </tr>`).join("");
   host.innerHTML = `<table><thead><tr>
-      <th>Entity</th><th>Type</th><th>Doing</th><th>Where</th>
+      <th>Entity</th>${named ? "<th>Who</th>" : ""}<th>Type</th><th>Doing</th><th>Where</th>
     </tr></thead><tbody>${rows}</tbody></table>`;
 }
 
