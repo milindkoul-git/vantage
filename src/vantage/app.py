@@ -29,7 +29,12 @@ from vantage.ingestion.pipeline import IngestionPipeline, PipelineStats
 from vantage.ingestion.registry import create_source
 from vantage.tracking.factory import build_tracker
 from vantage.viz.hud import HudRenderer
-from vantage.viz.overlay import draw_detections, draw_poses, draw_tracks
+from vantage.viz.overlay import (
+    draw_activities,
+    draw_detections,
+    draw_poses,
+    draw_tracks,
+)
 from vantage.viz.window import KEY_NONE, FrameSink, NullSink, WindowSink
 
 if TYPE_CHECKING:  # detection is optional; importing it eagerly would make
@@ -39,6 +44,8 @@ if TYPE_CHECKING:  # detection is optional; importing it eagerly would make
     from vantage.pose.contracts import PoseResult
     from vantage.pose.engine import PoseEngine
     from vantage.state.contracts import StateResult
+    from vantage.activity.contracts import ActivityResult
+    from vantage.activity.engine import ActivityEngine
     from vantage.state.estimator import StateEstimator
 
 log = get_logger(__name__)
@@ -67,6 +74,7 @@ class RunResult:
     pose_steps: int = 0
     pose_summary: dict[str, Any] = field(default_factory=dict)
     state_summary: dict[str, Any] = field(default_factory=dict)
+    activity_summary: dict[str, Any] = field(default_factory=dict)
 
     def summary(self) -> str:
         base = (
@@ -106,6 +114,10 @@ class RunResult:
                 f"\nstate: {detail.get('entities', 0)} entities, "
                 f"{detail.get('moving', 0)} moving at end"
             )
+        if self.activity_summary:
+            counts = self.activity_summary.get("counts") or {}
+            summary = ", ".join(f"{n} {name}" for name, n in sorted(counts.items()))
+            base += f"\nactivity: {summary or 'nothing recognised'} at end"
         return base
 
 
@@ -173,6 +185,8 @@ def run_ingestion(
     pose_latency = LatencyTracker(window=240)
     state_estimator = _build_state_estimator(config)
     latest_state = None
+    activity_engine = _build_activity_engine(config)
+    latest_activity = None
 
     try:
         info = pipeline.start()
@@ -233,6 +247,22 @@ def run_ingestion(
                                         "vantage_fields": {"summary": latest_pose.describe()}
                                     },
                                 )
+                        # Activity runs after pose so it can see this frame's
+                        # skeletons rather than the previous pass's.
+                        if activity_engine is not None and latest_state is not None:
+                            latest_activity = activity_engine.update(latest_state, latest_pose)
+                            notable = latest_activity.notable()
+                            if notable:
+                                log.debug(
+                                    "activity",
+                                    extra={
+                                        "vantage_fields": {
+                                            "summary": "; ".join(
+                                                e.describe() for e in notable
+                                            )
+                                        }
+                                    },
+                                )
                 else:
                     # Carry the last pass forward so the display stays populated
                     # between inferences, but mark it so it is drawn as stale.
@@ -250,6 +280,7 @@ def run_ingestion(
                         entity_total=_entity_total(tracker),
                         pose=latest_pose,
                         state=latest_state,
+                        activity=latest_activity,
                     )
                     if hud_enabled
                     else frame.editable_copy()
@@ -269,6 +300,8 @@ def run_ingestion(
                         latest_pose,
                         min_confidence=config.pose.min_keypoint_confidence,
                     )
+                if latest_activity is not None and latest_tracking is not None:
+                    image = draw_activities(image, latest_activity, latest_tracking)
                 key = sink.show(image)
                 if key != KEY_NONE:
                     action = _handle_key(key, frame, stats, config, snapshots)
@@ -322,6 +355,7 @@ def run_ingestion(
         pose_steps=pose_steps,
         pose_summary=_pose_summary(estimator, pose_latency, latest_pose, pose_steps),
         state_summary=_state_summary(latest_state),
+        activity_summary=_activity_summary(latest_activity),
     )
     log.info("run complete", extra={"vantage_fields": {"summary": result.summary()}})
     return result
@@ -421,6 +455,25 @@ def _build_state_estimator(config: VantageConfig) -> "StateEstimator | None":
             min_age_s=config.state.min_age_s,
         )
     )
+
+
+def _build_activity_engine(config: VantageConfig) -> "ActivityEngine | None":
+    """Construct the activity recogniser, or ``None`` when it is off."""
+    if not (config.activity.enabled and config.tracking.enabled and config.state.enabled):
+        return None
+    from vantage.activity.engine import build_activity_engine
+
+    return build_activity_engine(config.activity)
+
+
+def _activity_summary(latest: "ActivityResult | None") -> dict[str, Any]:
+    if latest is None:
+        return {}
+    return {
+        "entities": len(latest),
+        "pose_available": latest.pose_available,
+        "counts": latest.counts(),
+    }
 
 
 def _pose_summary(

@@ -154,6 +154,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="drop the five head landmarks (nose, eyes, ears) before they are constructed",
     )
     run.add_argument(
+        "--no-activity",
+        action="store_true",
+        help="disable activity recognition, which is otherwise on with tracking",
+    )
+    run.add_argument(
         "--no-state",
         action="store_true",
         help="disable motion/dwell state estimation, which is otherwise on with tracking",
@@ -236,6 +241,25 @@ def build_parser() -> argparse.ArgumentParser:
     )
     track.add_argument("--json", action="store_true")
 
+    activity = sub.add_parser(
+        "activity",
+        parents=[common],
+        help="evaluate activity recognition against scripted ground truth",
+    )
+    activity.add_argument(
+        "action",
+        choices=["eval", "scenarios"],
+        nargs="?",
+        default="eval",
+        help="eval: score the rules; scenarios: list what each one checks",
+    )
+    activity.add_argument(
+        "--scenarios",
+        default=None,
+        help="comma-separated scenario names (default: all)",
+    )
+    activity.add_argument("--json", action="store_true")
+
     bench = sub.add_parser(
         "bench", parents=[common], help="benchmark detection backends on this machine"
     )
@@ -298,6 +322,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             return _cmd_bench(args)
         if command == "track":
             return _cmd_track(args)
+        if command == "activity":
+            return _cmd_activity(args)
         if command == "discover":
             return _cmd_discover(args)
         parser.error(f"unknown command {command!r}")
@@ -604,6 +630,84 @@ def _cmd_discover(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+def _cmd_activity(args: argparse.Namespace) -> int:
+    """Score the activity rules against scripted ground truth."""
+    from vantage.activity.evaluation import aggregate, evaluate, format_table
+    from vantage.activity.scenarios import SCENARIOS, build_suite
+
+    names = [n.strip() for n in args.scenarios.split(",")] if args.scenarios else None
+
+    if args.action == "scenarios":
+        if args.json:
+            print(
+                json.dumps(
+                    {
+                        name: {
+                            "description": scenario.description,
+                            "duration_s": round(scenario.duration_s, 1),
+                            "events": [a.value for a in scenario.events],
+                            "forbidden": sorted(a.value for a in scenario.forbidden),
+                        }
+                        for name, scenario in SCENARIOS.items()
+                    },
+                    indent=2,
+                )
+            )
+            return EXIT_OK
+        print("Activity scenarios\n")
+        for name, scenario in SCENARIOS.items():
+            print(f"  {name:32s} {scenario.duration_s:5.1f}s  {scenario.description}")
+            if scenario.events:
+                print(f"  {'':32s}        expects: {', '.join(a.value for a in scenario.events)}")
+            if scenario.forbidden:
+                print(
+                    f"  {'':32s}        must never fire: "
+                    f"{', '.join(sorted(a.value for a in scenario.forbidden))}"
+                )
+        return EXIT_OK
+
+    results = [evaluate(scenario) for scenario in build_suite(names)]
+    pooled = aggregate(results)
+
+    if args.json:
+        print(
+            json.dumps(
+                {
+                    "scenarios": [
+                        {
+                            "name": m.scenario,
+                            "recall": round(m.recall, 4),
+                            "scored_frames": m.scored_frames,
+                            "events_found": m.events_found,
+                            "events_expected": len(m.events_expected),
+                            "event_latency_s": {k: round(v, 3) for k, v in m.event_latency_s.items()},
+                            "forbidden_firings": m.forbidden_firings,
+                            "passed": m.passed,
+                        }
+                        for m in results
+                    ],
+                    "pooled": {
+                        "recall": round(pooled.recall, 4),
+                        "events_found": pooled.events_found,
+                        "events_expected": len(pooled.events_expected),
+                        "forbidden_firings": pooled.forbidden_firings,
+                    },
+                },
+                indent=2,
+            )
+        )
+    else:
+        print(format_table(results))
+
+    # A forbidden firing or a missed event is a failure, not a low score. The
+    # exit code says so, so this can gate a build.
+    failed = [m for m in results if not m.passed]
+    if failed:
+        print(f"\n{len(failed)} scenario(s) failed: {', '.join(m.scenario for m in failed)}")
+        return EXIT_ERROR
+    return EXIT_OK
+
+
 def _cmd_track(args: argparse.Namespace) -> int:
     """Evaluate or tune the tracker against the ground-truth scenarios.
 
@@ -868,6 +972,12 @@ def _flag_overrides(args: argparse.Namespace) -> list[str]:
         overrides.append("pose.include_face_keypoints=false")
     if args.no_state:
         overrides.append("state.enabled=false")
+        # Every activity rule reads motion state, so without it the recogniser
+        # could only ever report "idle". Turning it off too is the honest
+        # consequence rather than leaving a subsystem running on nothing.
+        overrides.append("activity.enabled=false")
+    if args.no_activity:
+        overrides.append("activity.enabled=false")
     if args.track or args.pose:
         # --track implies --detect rather than erroring, because a tracker with
         # no detector cannot do anything at all; requiring both flags would be

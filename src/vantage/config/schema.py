@@ -452,6 +452,75 @@ class StateConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class ActivityConfig:
+    """Temporal activity recognition. Needs no model; on whenever tracking is.
+
+    Reads the signals state and pose already produce, so the cost is a bounded
+    buffer per entity and some arithmetic. Without pose the posture-derived
+    activities simply never fire, which is correct rather than degraded.
+    """
+
+    enabled: bool = True
+
+    walking_speed: float = 0.15
+    """Entity heights per second above which a moving entity is walking. Kept
+    equal to ``state.moving_above``; see the cross-check in
+    :meth:`VantageConfig.__post_init__`."""
+
+    running_speed: float = 1.30
+    """And above which it is running. A walk measures 0.6-0.9 h/s and a run
+    1.5-2.5, so the boundary sits in the gap rather than through either."""
+
+    sustain_s: float = 0.4
+    """How long a continuous rule must hold before it is reported."""
+
+    loiter_s: float = 20.0
+    """Stationary for this long becomes loitering. A duration, not a judgement:
+    what it means is a policy question for the event rules of a later phase."""
+
+    transition_window_s: float = 2.5
+    fall_window_s: float = 1.2
+    """Upright to lying faster than this is a fall; slower is a deliberate
+    lie-down and is reported as nothing at all. Read the limitations in
+    :mod:`vantage.activity` before relying on this for anything."""
+
+    transient_hold_s: float = 1.5
+    posture_window_s: float = 0.6
+    min_posture_confidence: float = 0.25
+    min_keypoint_confidence: float = 0.3
+    history: int = 240
+
+    def __post_init__(self) -> None:
+        if self.walking_speed <= 0:
+            raise ConfigError("activity.walking_speed must be positive")
+        if self.running_speed <= self.walking_speed:
+            raise ConfigError(
+                f"activity.running_speed ({self.running_speed}) must exceed "
+                f"activity.walking_speed ({self.walking_speed}), or running can "
+                "never be distinguished from walking"
+            )
+        if self.fall_window_s > self.transition_window_s:
+            raise ConfigError(
+                f"activity.fall_window_s ({self.fall_window_s}) must not exceed "
+                f"activity.transition_window_s ({self.transition_window_s}): a fall "
+                "is a fast posture transition, so it cannot be detectable over a "
+                "longer span than transitions are paired over"
+            )
+        for name in (
+            "sustain_s",
+            "loiter_s",
+            "transition_window_s",
+            "fall_window_s",
+            "transient_hold_s",
+            "posture_window_s",
+        ):
+            if getattr(self, name) < 0:
+                raise ConfigError(f"activity.{name} must be >= 0")
+        if self.history < 2:
+            raise ConfigError("activity.history must be >= 2")
+
+
+@dataclass(frozen=True, slots=True)
 class DisplayConfig:
     """The Phase 1 diagnostic viewer.
 
@@ -507,6 +576,7 @@ class VantageConfig:
     tracking: TrackingConfig = field(default_factory=TrackingConfig)
     pose: PoseConfig = field(default_factory=PoseConfig)
     state: StateConfig = field(default_factory=StateConfig)
+    activity: ActivityConfig = field(default_factory=ActivityConfig)
     display: DisplayConfig = field(default_factory=DisplayConfig)
 
     def __post_init__(self) -> None:
@@ -521,4 +591,18 @@ class VantageConfig:
                 "pose.enabled requires tracking.enabled: pose estimation is top-down "
                 "and takes its person boxes from tracks, which is also what binds each "
                 "skeleton to a stable entity id. Pass --track along with --pose."
+            )
+        if self.activity.enabled and self.tracking.enabled and not self.state.enabled:
+            raise ConfigError(
+                "activity.enabled requires state.enabled: every activity rule reads "
+                "the motion state, so with state off the recogniser would report "
+                "nothing but 'idle' for every entity. Disable activity too, or "
+                "re-enable state."
+            )
+        if self.activity.enabled and self.activity.walking_speed > self.state.moving_above:
+            raise ConfigError(
+                f"activity.walking_speed ({self.activity.walking_speed}) must not exceed "
+                f"state.moving_above ({self.state.moving_above}). Between the two, the "
+                "state machine calls an entity moving while no locomotion rule fires, so "
+                "the same entity is reported as moving and idle in the same frame."
             )

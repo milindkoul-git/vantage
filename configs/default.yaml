@@ -118,6 +118,30 @@ state:
   # handful of pixels per second and the same person near the lens covers
   # hundreds, and both are walking.
 
+activity:
+  # Temporal activity recognition. Needs no model and no weights - it reads the
+  # motion state and posture the earlier stages already produce - so it is on
+  # whenever tracking and state are. Without pose, the posture-derived
+  # activities simply never fire.
+  enabled: true
+  walking_speed: 0.15      # heights per second; keep equal to state.moving_above
+  running_speed: 1.30      # and above which it is running
+  sustain_s: 0.4           # how long a continuous rule must hold before reporting
+  loiter_s: 20.0           # stationary this long becomes loitering
+  transition_window_s: 2.5 # longest posture change still paired as one transition
+  fall_window_s: 1.2       # upright to lying faster than this is a fall
+  transient_hold_s: 1.5    # how long a one-off event keeps being reported
+  posture_window_s: 0.6    # window a posture must dominate to become "stable"
+  min_posture_confidence: 0.25
+  min_keypoint_confidence: 0.3
+  history: 240             # samples kept per entity (8 seconds at 30 fps)
+  #
+  # fall_window_s is the one to read twice. A person lowering themselves
+  # deliberately takes longer than this and is reported as NOTHING - not as a
+  # low-confidence fall - because a hedged alert trains whoever reads it to
+  # ignore the real one. This is not a certified fall detector; see the
+  # limitations in README S8 before relying on it.
+
 display:
   enabled: true
   window_name: "Vantage - Ingestion"

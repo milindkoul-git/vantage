@@ -212,6 +212,43 @@ runtime; the remaining 19 exercise real weights and deselect cleanly.
 
 ---
 
+## 2f. What Phase 5 delivers
+
+Temporal activity recognition - the first thing here that cannot be answered
+from a single frame at all. ``sitting_down`` is not a posture, it is a *change*
+of posture; ``loitering`` is indistinguishable from standing until you know how
+long it has lasted.
+
+**Eight activities, each derivable and each stating its grounds.**
+
+| Activity | Derived from | Needs pose |
+|---|---|---|
+| `walking`, `running` | sustained speed in heights/second | no |
+| `loitering` | stationary dwell past a threshold | no |
+| `idle` | present, nothing else recognised | no |
+| `sitting_down`, `standing_up` | stable-posture transitions | yes |
+| `falling` | upright to lying, fast | yes |
+| `arm_raised` | wrist above shoulder, sustained | yes |
+
+Several can hold at once, deliberately: a person can be walking with an arm up,
+and forcing a single winner would discard one of two true statements. Every
+observation carries **evidence** in words - `0.62 h/s, held on 100% of the last
+0.4s` - so a surprising result can be argued with rather than merely believed.
+
+**A ground-truth harness, which is again where the value was.** Eleven scripted
+scenarios run through the *real* state estimator, scoring continuous recall,
+event detection with latency, and - the half that matters - activities that
+**must never fire**. `vantage activity eval` reports all three and exits
+non-zero on failure, so it can gate a build.
+
+**No model, and that was an evidence-based decision rather than a shortcut.**
+See section 5.
+
+**600 tests** (+54), 581 of which need no camera, no model file and no inference
+runtime; the remaining 19 exercise real weights and deselect cleanly.
+
+---
+
 ## 3. Quick start
 
 Requires Python 3.11+ (developed on 3.13.1).
@@ -315,6 +352,31 @@ If posture reads `unknown` on a desk webcam, that is the correct answer rather
 than a fault: a seated person and a standing one are identical from the hips up,
 and the classifier says so instead of guessing. The reason is carried on every
 pose and printed in the debug log.
+
+### Activity (Phase 5)
+
+Runs automatically with tracking - no model, no flag, no cost worth measuring:
+
+```bash
+vantage run --source webcam:0 --track --pose --device gpu
+```
+
+Each entity gets a label under its box for what it is doing, and the HUD shows
+the tally. Transient events - a fall, someone sitting down - are drawn in amber
+and called out on their own HUD line, because they will be gone in a second.
+
+Check the rules against ground truth rather than taking their word for it:
+
+```bash
+vantage activity scenarios     # what each scenario checks, including the negatives
+vantage activity eval          # recall, event latency, forbidden firings
+vantage activity eval --scenarios fall,lie_down_slowly
+vantage run --track --no-activity     # turn it off
+```
+
+`activity eval` needs no camera, no model and no inference runtime, and exits
+non-zero if any scenario fails - a forbidden firing or a missed event is a
+failure, not a low score.
 
 ### One-click launch (Windows)
 
@@ -476,6 +538,14 @@ vantage/
 │  ├─ contracts.py   MotionState, EntityState, the observation record
 │  └─ estimator.py   hysteresis, dwell timing, path length; no model, no weights
 │
+├─ activity/      Phase 5: what has been happening, over time
+│  ├─ contracts.py   Activity, ActivityObservation, the observation record
+│  ├─ base.py        the Recognizer Protocol - the seam for a learned model
+│  ├─ recognizer.py  the rules: sustain windows, stable posture, transitions
+│  ├─ engine.py      buffers, pose pairing, footage-time accounting
+│  ├─ scenarios.py   scripted ground truth, positive and negative
+│  └─ evaluation.py  recall, event latency, forbidden firings
+│
 ├─ viz/           diagnostic display only; contains no analysis logic
 ├─ app.py         composition root - the only module that knows about all layers
 └─ cli.py         command-line entry point
@@ -633,6 +703,60 @@ Extrapolating size across a gap of no evidence asserts something nobody knows.
 
 Worth 1 point of pooled MOTA, 5 identity switches and 9 points of occlusion IDF1 on the
 benchmark — and it was invisible to every metric until someone looked at a rendered frame.
+
+### Activity recognition ships no model, and that was measured
+
+The obvious choice was a learned skeleton-action model. It was surveyed before
+the rules were written, and three findings ruled it out - none of them a matter
+of taste:
+
+* **No permissively licensed export with real provenance exists.** OpenMMLab
+  publishes PoseC3D and ST-GCN as PyTorch checkpoints and ships no ONNX SDK for
+  them (`/mmaction/v1.0/skeleton/onnx_sdk/` is a 404). The hub's `st-gcn`
+  results are unrelated models: traffic forecasting, weather, sign language.
+* **The video classifiers that do exist are the wrong shape.** VideoMAE and
+  friends label a *frame*, not an entity - throwing away the identity this whole
+  platform is built around, and answering "someone is doing X somewhere" when
+  the question is "what is person_17 doing".
+* **Their vocabularies are wrong.** Kinetics-400 offers `abseiling`, `zumba`
+  and `shredding paper`. NTU is lab-recorded daily living. Neither contains
+  `loitering`, and a model that confidently reports the wrong *kind* of thing is
+  worse than a short list of things that are actually true.
+
+So the recogniser is rules over measured signals.
+:class:`~vantage.activity.base.Recognizer` is a Protocol precisely so a learned
+model can replace it when one is worth having; the engine, buffers and contracts
+would not change.
+
+### Two stages must not disagree about the same entity
+
+`state.moving_above` decides whether an entity is moving; `activity.walking_speed`
+decides whether that counts as walking. Setting the second higher than the first
+opens a band where both are true at once: the state machine reports **moving**
+while no locomotion rule fires, so the entity is simultaneously moving and
+`idle`.
+
+This was not hypothetical. With the thresholds at 0.15 and 0.20, a real clip of
+a person crossing the frame at 0.175 h/s produced exactly that contradiction.
+The defaults are now equal and the configuration is rejected if they are not.
+The state machine has already applied hysteresis and a minimum hold to decide
+that motion is genuine; second-guessing it with a higher threshold downstream
+only produces disagreement.
+
+### A bare majority is not enough to debounce a flicker
+
+Stable posture is what transitions are detected between, and promoting the
+majority posture of a short window looked obviously sufficient. It is not, and
+the failure is specific rather than theoretical.
+
+Under a perfect frame-by-frame alternation the window holds an even split, which
+a strict majority correctly refuses - **but only while the window holds an even
+number of samples**. On every frame where it holds an odd number, one posture
+leads by one, the stable posture flips, and a transition fires. Measured against
+120 alternating frames: **101 spurious transitions**.
+
+A supermajority tops out near 53% under alternation and never promotes. The cost
+is real and was measured too: event latency rose from 0.30 s to 0.43 s.
 
 ### Posture is rules, and says "unknown" rather than guessing
 
@@ -913,6 +1037,34 @@ Frame   Observed
 Path length stops accumulating when the entity stops, and the 0.21 heights
 recorded matches the 70 px of travel against a 343 px box.
 
+### Activity recognition (`vantage activity eval`)
+
+Eleven scripted scenarios through the real state estimator. Recall is over
+scored frames, latency is from the movement that should cause an event:
+
+```
+SCENARIO                           RECALL   EVENTS   LATENCY  FORBIDDEN
+walk                               100.0%        -         -          0
+run                                100.0%        -         -          0
+loiter                             100.0%        -         -          0
+sit_down                                -      1/1     0.43s          0
+stand_up                                -      1/1     0.43s          0
+fall                                    -      1/1     0.43s          0
+fall_after_standing_a_while             -      1/1     0.43s          0
+lie_down_slowly                         -        -         -          0
+arm_raised                         100.0%        -         -          0
+no_pose                            100.0%        -         -          0
+jitter                             100.0%        -         -          0
+POOLED                             100.0%      4/4     0.43s          0
+```
+
+Five of the eleven exist to check that something does **not** fire.
+`lie_down_slowly` is the one that matters most: a deliberate lie-down via a
+crouch must produce no fall at all. `jitter` checks that a standing person whose
+box wobbles is never reported as walking, and `no_pose` that locomotion still
+works with pose disabled while no posture-derived activity is invented from
+nothing.
+
 ### Occlusion tolerance, measured
 
 The capability the phase exists for, with exact ground truth (object crossing at 200 px/s):
@@ -973,6 +1125,21 @@ geometry, which needs calibration.
 default) plus filter lag - measured at 0.63 s end to end. That is the price of
 dwell timings that mean something, and it is a poor trade for anything needing
 sub-second reaction.
+
+**`falling` is not a certified fall detector** and must not be relied on where
+one is required. It reports that a body went from upright to horizontal quickly,
+which is a different claim. It **needs legs** - posture needs hips and knees, so
+a camera seeing people only from the waist up can never report a fall at all -
+and it inherits the posture rules' blind spot for steeply angled cameras. A
+person lowering themselves deliberately is reported as **nothing**, not as a
+low-confidence fall, because a hedged alert teaches whoever reads it to ignore
+the real one. Detection latency is 0.43 s on scripted ground truth.
+
+**Activity thresholds are chosen, not tuned.** Unlike the tracker's parameters,
+which are the output of a search against held-out data, the activity thresholds
+were set from published gait figures and checked against the scenarios. The
+scenarios confirm the rules behave as specified; they cannot confirm that
+`loiter_s: 20` is the right number for your building.
 
 **Open-vocabulary detection cannot run live on this hardware, and the split is deliberate.**
 Measured, not estimated:
@@ -1117,8 +1284,8 @@ not a fixed plan:
 | 3 | Multi-object tracking | Done |
 | 3.5 | Larger detection vocabulary | Done, inserted |
 | 4 | Human pose & object state | Done |
-| 5 | Temporal activity recognition | Next |
-| 6 | Spatial & interaction understanding | |
+| 5 | Temporal activity recognition | Done |
+| 6 | Spatial & interaction understanding | Next |
 | 7 | Event engine | |
 | 8 | Observation & event storage | |
 | 9 | Visualization / dashboard | |

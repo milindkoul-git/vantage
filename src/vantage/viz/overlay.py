@@ -24,7 +24,9 @@ if TYPE_CHECKING:  # tracking is optional at render time; the overlay must not
     # make it an import-time requirement for plain detection display.
     from vantage.tracking.contracts import Track, TrackingResult
     from vantage.pose.contracts import PoseResult
+    from vantage.activity.contracts import ActivityResult
 
+from vantage.activity.contracts import Activity
 from vantage.pose.contracts import SKELETON, Posture
 
 _FONT = cv2.FONT_HERSHEY_SIMPLEX
@@ -310,3 +312,46 @@ def _draw_label(
         1,
         cv2.LINE_AA,
     )
+
+
+def draw_activities(
+    image: np.ndarray,
+    result: "ActivityResult",
+    tracking: "TrackingResult",
+    *,
+    show_idle: bool = False,
+) -> np.ndarray:
+    """Label each entity with what it is doing, under its box.
+
+    Same ownership contract as :func:`draw_detections`.
+
+    Placed **below** the box, because the entity id and class already sit above
+    it and stacking three captions on one edge makes all of them unreadable in a
+    crowd.
+
+    ``idle`` is hidden by default. It is a real observation and worth carrying in
+    the record, but printing "idle" over everyone standing still turns the
+    display into noise and buries the one entity that is doing something.
+    """
+    canvas = image if image.flags.writeable else image.copy()
+    scale = max(0.4, min(0.7, canvas.shape[1] / 1600.0))
+    boxes = {track.track_id: track.box for track in tracking.tracks}
+
+    for entity in result:
+        box = boxes.get(entity.track_id)
+        if box is None:
+            continue
+        primary = entity.primary
+        if primary is None:
+            continue
+        if primary.activity is Activity.IDLE and not show_idle:
+            continue
+
+        _, _, _, y2 = box.to_int()
+        x1 = box.to_int()[0]
+        label = f"{primary.activity.value} {primary.confidence:.2f}"
+        # A transient event gets the alert colour rather than the track's, so a
+        # fall does not blend into whatever hue that person happens to own.
+        color = (0, 165, 255) if primary.activity.is_transient else track_color(entity.track_id)
+        _draw_label(canvas, label, (x1, min(canvas.shape[0] - 2, y2 + 18)), color, scale)
+    return canvas

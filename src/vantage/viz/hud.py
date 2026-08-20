@@ -29,6 +29,7 @@ if TYPE_CHECKING:  # imported for typing only - viz must not require a detector
     from vantage.tracking.contracts import TrackingResult
     from vantage.pose.contracts import PoseResult
     from vantage.state.contracts import StateResult
+    from vantage.activity.contracts import ActivityResult
 
 _FONT = cv2.FONT_HERSHEY_SIMPLEX
 _WHITE = (245, 245, 245)
@@ -58,6 +59,7 @@ class HudRenderer:
         entity_total: int = 0,
         pose: "PoseResult | None" = None,
         state: "StateResult | None" = None,
+        activity: "ActivityResult | None" = None,
     ) -> np.ndarray:
         """Return an annotated copy of ``image``.
 
@@ -76,6 +78,8 @@ class HudRenderer:
             lines.extend(self._compose_state(state))
         if pose is not None:
             lines.extend(self._compose_pose(pose))
+        if activity is not None:
+            lines.extend(self._compose_activity(activity))
         if extra:
             lines.extend(("", value, _DIM) for value in extra)
 
@@ -167,6 +171,34 @@ class HudRenderer:
             )
         )
         rows.append(("det rate", f"max {1000.0 / total:.1f} fps" if total > 0 else "n/a", _DIM))
+        return rows
+
+    def _compose_activity(
+        self, activity: "ActivityResult"
+    ) -> list[tuple[str, str, tuple[int, int, int]]]:
+        """What entities are doing, with transient events called out."""
+        if not activity.entities:
+            return []
+
+        counts = {
+            name: n for name, n in activity.counts().items() if name != "idle"
+        }
+        summary = ", ".join(f"{n} {name}" for name, n in sorted(counts.items()))
+        rows = [("activity", summary or "nothing notable", _WHITE if counts else _DIM)]
+
+        # A transient event is the one thing on this panel that will be gone in
+        # a second, so it gets its own line in the warning colour rather than
+        # being averaged into a tally.
+        for entity in activity.entities:
+            primary = entity.primary
+            if primary is not None and primary.activity.is_transient:
+                rows.append(
+                    (
+                        primary.activity.value,
+                        f"{entity.entity_id} ({primary.confidence:.2f})",
+                        _WARN,
+                    )
+                )
         return rows
 
     def _compose_state(
