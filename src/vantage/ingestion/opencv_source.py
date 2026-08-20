@@ -76,8 +76,7 @@ def resolve_backend(name: str, kind: SourceKind) -> tuple[int, str]:
         return cv2.CAP_FFMPEG, "ffmpeg"
     if key not in BACKENDS:
         raise SourceOpenError(
-            f"unknown capture backend {name!r}; valid options are "
-            f"{sorted(BACKENDS)} or 'auto'"
+            f"unknown capture backend {name!r}; valid options are {sorted(BACKENDS)} or 'auto'"
         )
     return BACKENDS[key], key
 
@@ -233,9 +232,7 @@ class OpenCVSource(FrameSource):
                 },
             )
 
-    def _warn_on_negotiation_mismatch(
-        self, width: int, height: int, fps: float | None
-    ) -> None:
+    def _warn_on_negotiation_mismatch(self, width: int, height: int, fps: float | None) -> None:
         want_w, want_h, want_fps = self._requested
         if want_w and want_h and (want_w != width or want_h != height):
             log.warning(

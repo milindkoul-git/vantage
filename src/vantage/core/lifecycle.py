@@ -16,8 +16,8 @@ from __future__ import annotations
 
 import signal
 import threading
+from collections.abc import Callable
 from types import FrameType
-from typing import Callable
 
 from vantage.core.logging import get_logger
 
@@ -64,7 +64,7 @@ class ShutdownController:
         """Register a callback fired once when shutdown is first requested."""
         self._on_shutdown.append(callback)
 
-    def install(self) -> "ShutdownController":
+    def install(self) -> ShutdownController:
         """Install signal handlers. Only valid on the main thread."""
         if self._installed:
             return self
@@ -88,7 +88,7 @@ class ShutdownController:
     def restore(self) -> None:
         """Restore the handlers that were in place before :meth:`install`."""
         for signum, handler in self._previous.items():
-            try:
+            try:  # noqa: SIM105 - the comment below is the point
                 signal.signal(signum, handler)  # type: ignore[arg-type]
             except (ValueError, OSError):  # pragma: no cover - platform dependent
                 pass
@@ -105,7 +105,7 @@ class ShutdownController:
             return
         self.request(reason=signal.Signals(signum).name)
 
-    def __enter__(self) -> "ShutdownController":
+    def __enter__(self) -> ShutdownController:
         return self.install()
 
     def __exit__(self, *_exc: object) -> None:

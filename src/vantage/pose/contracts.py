@@ -25,9 +25,9 @@ to know that the estimator worked on a 192x256 crop.
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Iterator
 
 from vantage.perception.contracts import BoundingBox
 from vantage.perception.labels import COCO_KEYPOINTS
@@ -132,7 +132,10 @@ class Pose:
     model: str = "unknown"
 
     def __post_init__(self) -> None:
-        if len(self.keypoints) not in (len(KEYPOINT_NAMES), len(KEYPOINT_NAMES) - len(FACE_KEYPOINTS)):
+        if len(self.keypoints) not in (
+            len(KEYPOINT_NAMES),
+            len(KEYPOINT_NAMES) - len(FACE_KEYPOINTS),
+        ):
             raise ValueError(
                 f"expected {len(KEYPOINT_NAMES)} keypoints (or "
                 f"{len(KEYPOINT_NAMES) - len(FACE_KEYPOINTS)} with face landmarks "

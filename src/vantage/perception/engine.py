@@ -16,9 +16,9 @@ which lever to pull.
 from __future__ import annotations
 
 import time
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Sequence
 
 import numpy as np
 
@@ -90,7 +90,9 @@ class DetectionEngine:
 
         self._keep: frozenset[str] | None = None
         if keep_classes:
-            self._keep = frozenset(name.strip().lower() for name in keep_classes if name.strip())
+            self._keep = frozenset(
+                name.strip().lower() for name in keep_classes if name.strip()
+            )
             unknown = self._keep - {label.lower() for label in adapter.labels}
             if unknown:
                 raise ConfigError(
@@ -210,7 +212,7 @@ class DetectionEngine:
             self._backend.close()
             self._closed = True
 
-    def __enter__(self) -> "DetectionEngine":
+    def __enter__(self) -> DetectionEngine:
         return self
 
     def __exit__(self, *_exc: object) -> None:

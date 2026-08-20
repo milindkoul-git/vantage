@@ -124,7 +124,7 @@ class MotionNoise:
 class KalmanBoxFilter:
     """Tracks one box. Owns mutable state; never shared between tracks."""
 
-    __slots__ = ("_mean", "_covariance", "_noise")
+    __slots__ = ("_covariance", "_mean", "_noise")
 
     def __init__(self, box: BoundingBox, noise: MotionNoise | None = None) -> None:
         self._noise = noise or MotionNoise()
@@ -188,7 +188,9 @@ class KalmanBoxFilter:
         transition[1, NDIM + 1] = dt
 
         self._mean = transition @ self._mean
-        self._covariance = transition @ self._covariance @ transition.T + self._process_noise(dt)
+        self._covariance = transition @ self._covariance @ transition.T + self._process_noise(
+            dt
+        )
 
     def update(self, box: BoundingBox) -> None:
         """Correct the state with a measured box."""

@@ -40,7 +40,7 @@ from vantage.pose.contracts import (
 )
 from vantage.pose.engine import PoseEngine
 from vantage.pose.posture import classify
-from vantage.tracking.contracts import Track, TrackState, TrackingResult
+from vantage.tracking.contracts import Track, TrackingResult, TrackState
 
 INPUT_SIZE = (256, 192)  # (height, width)
 BOX = BoundingBox(100.0, 50.0, 300.0, 450.0)
@@ -108,11 +108,11 @@ def tracking_of(*tracks) -> TrackingResult:
 
 class TestContracts:
     def test_keypoint_confidence_is_bounded(self) -> None:
-        with pytest.raises(ValueError, match="confidence"):
+        with pytest.raises(ValueError, match=r"confidence"):
             Keypoint(1.0, 2.0, 1.5)
 
     def test_pose_rejects_a_wrong_keypoint_count(self) -> None:
-        with pytest.raises(ValueError, match="keypoints"):
+        with pytest.raises(ValueError, match=r"keypoints"):
             Pose(
                 keypoints=(Keypoint(0.0, 0.0, 0.5),) * 5,
                 track_id=1,
@@ -140,7 +140,7 @@ class TestContracts:
         )
 
     def test_a_dropped_face_keypoint_is_none_not_a_zero(self) -> None:
-        """"Not collected" must stay distinguishable from "not visible"."""
+        """ "Not collected" must stay distinguishable from "not visible"."""
         keypoints = tuple(
             Keypoint(1.0, 1.0, 0.9)
             for i in range(len(KEYPOINT_NAMES))
@@ -266,14 +266,14 @@ class TestDecoding:
     def test_missing_second_output_is_an_error(self) -> None:
         adapter = RTMPoseAdapter(INPUT_SIZE)
         prepared = adapter.preprocess(np.zeros((480, 640, 3), np.uint8), BOX)
-        with pytest.raises(ValueError, match="two outputs"):
+        with pytest.raises(ValueError, match=r"two outputs"):
             adapter.postprocess([np.zeros((1, 17, 384), np.float32)], prepared)
 
     def test_wrong_keypoint_count_is_an_error(self) -> None:
         """A hand or face model would decode into a nonsense body skeleton."""
         adapter = RTMPoseAdapter(INPUT_SIZE)
         prepared = adapter.preprocess(np.zeros((480, 640, 3), np.uint8), BOX)
-        with pytest.raises(ValueError, match="21 keypoints"):
+        with pytest.raises(ValueError, match=r"21 keypoints"):
             adapter.postprocess(
                 [np.zeros((1, 21, 384), np.float32), np.zeros((1, 21, 512), np.float32)],
                 prepared,
@@ -405,9 +405,7 @@ class TestPosture:
 class TestEngine:
     def build(self, **kwargs) -> tuple[PoseEngine, FakePoseBackend]:
         backend = FakePoseBackend()
-        engine = PoseEngine(
-            RTMPoseAdapter(INPUT_SIZE), backend, model_name="fake", **kwargs
-        )
+        engine = PoseEngine(RTMPoseAdapter(INPUT_SIZE), backend, model_name="fake", **kwargs)
         return engine, backend
 
     def test_estimates_one_pose_per_person(self) -> None:
@@ -418,7 +416,7 @@ class TestEngine:
         assert result.people_seen == 2
 
     def test_non_person_tracks_are_ignored(self) -> None:
-        engine, backend = self.build()
+        engine, _backend = self.build()
         result = engine.estimate(
             make_frame(), tracking_of(make_track(1, label="car"), make_track(2))
         )
@@ -428,9 +426,7 @@ class TestEngine:
     def test_coasting_tracks_are_skipped(self) -> None:
         """A predicted box is a guess about where something is, not a crop of it."""
         engine, backend = self.build()
-        result = engine.estimate(
-            make_frame(), tracking_of(make_track(1, time_since_update=4))
-        )
+        result = engine.estimate(make_frame(), tracking_of(make_track(1, time_since_update=4)))
         assert len(result) == 0
         assert backend.calls == 0
 
@@ -472,15 +468,15 @@ class TestEngine:
     def test_use_after_close_is_an_error(self) -> None:
         engine, _ = self.build()
         engine.close()
-        with pytest.raises(RuntimeError, match="closed"):
+        with pytest.raises(RuntimeError, match=r"closed"):
             engine.estimate(make_frame(), tracking_of(make_track(1)))
 
     def test_invalid_budget_is_rejected(self) -> None:
-        with pytest.raises(ConfigError, match="max_persons"):
+        with pytest.raises(ConfigError, match=r"max_persons"):
             self.build(max_persons=0)
 
     def test_invalid_keypoint_threshold_is_rejected(self) -> None:
-        with pytest.raises(ConfigError, match="min_keypoint_confidence"):
+        with pytest.raises(ConfigError, match=r"min_keypoint_confidence"):
             self.build(min_keypoint_confidence=1.5)
 
 
@@ -497,7 +493,7 @@ class TestCatalog:
     def test_building_a_pose_engine_from_a_detector_is_refused(self) -> None:
         from vantage.pose.factory import build_pose_engine
 
-        with pytest.raises(ConfigError, match="not a pose estimator"):
+        with pytest.raises(ConfigError, match=r"not a pose estimator"):
             build_pose_engine(model="yolox-nano", allow_download=False)
 
 
@@ -549,7 +545,6 @@ class TestOverlayAndHud:
         assert out is not canvas
 
     def test_hud_reports_the_budget_shortfall(self) -> None:
-        from vantage.ingestion.pipeline import PipelineStats
         from vantage.viz.hud import HudRenderer
 
         result = self.build_result()
@@ -569,7 +564,7 @@ class TestConfigWiring:
     def test_pose_without_tracking_is_refused(self) -> None:
         from vantage.config.schema import PoseConfig, VantageConfig
 
-        with pytest.raises(ConfigError, match="requires tracking.enabled"):
+        with pytest.raises(ConfigError, match=r"requires tracking.enabled"):
             VantageConfig(pose=PoseConfig(enabled=True))
 
     def test_pose_flag_implies_detection_and_tracking(self) -> None:
@@ -592,9 +587,7 @@ class TestUnknownIsExplained:
     """An unexplained "unknown" is indistinguishable from a broken classifier."""
 
     def unknown_result(self, count: int = 1) -> PoseResult:
-        pose = make_pose(
-            {LEFT_SHOULDER: (140.0, 100.0), RIGHT_SHOULDER: (180.0, 100.0)}
-        )
+        pose = make_pose({LEFT_SHOULDER: (140.0, 100.0), RIGHT_SHOULDER: (180.0, 100.0)})
         estimate = classify(pose)
         assert estimate.posture is Posture.UNKNOWN
         return PoseResult(

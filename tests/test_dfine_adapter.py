@@ -136,11 +136,13 @@ class TestPostprocess:
         prepared = adapter().preprocess(np.zeros((100, 100, 3), dtype=np.uint8))
         outputs = [
             logits_for([(0, 5, 0.5), (1, 6, 0.95), (2, 7, 0.7)]),
-            boxes_for({
-                0: (0.2, 0.2, 0.1, 0.1),
-                1: (0.5, 0.5, 0.1, 0.1),
-                2: (0.8, 0.8, 0.1, 0.1),
-            }),
+            boxes_for(
+                {
+                    0: (0.2, 0.2, 0.1, 0.1),
+                    1: (0.5, 0.5, 0.1, 0.1),
+                    2: (0.8, 0.8, 0.1, 0.1),
+                }
+            ),
         ]
         detections = adapter().postprocess(outputs, prepared, 0.3, 0.45, 100)
         confidences = [d.confidence for d in detections]
@@ -150,9 +152,7 @@ class TestPostprocess:
         """Boxes must be well separated, or suppression removes them first."""
         prepared = adapter().preprocess(np.zeros((100, 100, 3), dtype=np.uint8))
         entries = [(q, 5, 0.9) for q in range(20)]
-        boxes = {
-            q: (0.025 + 0.05 * q, 0.025 + 0.05 * q, 0.03, 0.03) for q in range(20)
-        }
+        boxes = {q: (0.025 + 0.05 * q, 0.025 + 0.05 * q, 0.03, 0.03) for q in range(20)}
         outputs = [logits_for(entries), boxes_for(boxes)]
         assert len(adapter().postprocess(outputs, prepared, 0.3, 0.45, 7)) == 7
 
@@ -166,11 +166,13 @@ class TestPostprocess:
         prepared = adapter().preprocess(np.zeros((100, 100, 3), dtype=np.uint8))
         outputs = [
             logits_for([(0, 5, 0.9), (1, 5, 0.85), (2, 5, 0.8)]),
-            boxes_for({
-                0: (0.50, 0.50, 0.40, 0.40),
-                1: (0.51, 0.51, 0.40, 0.40),  # near-identical
-                2: (0.49, 0.49, 0.41, 0.41),  # near-identical
-            }),
+            boxes_for(
+                {
+                    0: (0.50, 0.50, 0.40, 0.40),
+                    1: (0.51, 0.51, 0.40, 0.40),  # near-identical
+                    2: (0.49, 0.49, 0.41, 0.41),  # near-identical
+                }
+            ),
         ]
         detections = adapter().postprocess(outputs, prepared, 0.3, 0.45, 100)
         assert len(detections) == 1
@@ -227,12 +229,12 @@ class TestPostprocess:
 
     def test_wrong_output_count_fails_loudly(self) -> None:
         prepared = adapter().preprocess(np.zeros((100, 100, 3), dtype=np.uint8))
-        with pytest.raises(ValueError, match="two outputs"):
+        with pytest.raises(ValueError, match=r"two outputs"):
             adapter().postprocess([logits_for([])], prepared, 0.3, 0.45, 100)
 
     def test_wrong_output_rank_fails_loudly(self) -> None:
         prepared = adapter().preprocess(np.zeros((100, 100, 3), dtype=np.uint8))
-        with pytest.raises(ValueError, match="unexpected"):
+        with pytest.raises(ValueError, match=r"unexpected"):
             adapter().postprocess(
                 [np.zeros((3, 3)), np.zeros((3, 3))], prepared, 0.3, 0.45, 100
             )

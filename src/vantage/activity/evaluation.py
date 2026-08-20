@@ -25,7 +25,6 @@ from vantage.activity.contracts import Activity
 from vantage.activity.engine import ActivityEngine
 from vantage.activity.recognizer import ActivityParams, RuleRecognizer
 from vantage.activity.scenarios import ActivityScenario, generate
-from vantage.config.schema import TrackingConfig
 from vantage.state.contracts import StateResult
 from vantage.state.estimator import StateEstimator, StateParams
 from vantage.tracking.contracts import TrackingResult
@@ -198,9 +197,7 @@ def aggregate(results: list[ActivityMetrics]) -> ActivityMetrics:
         for name, count in metrics.unexpected.items():
             pooled.unexpected[name] = pooled.unexpected.get(name, 0) + count
         for name, value in metrics.event_latency_s.items():
-            pooled.event_latency_s[name] = max(
-                pooled.event_latency_s.get(name, 0.0), value
-            )
+            pooled.event_latency_s[name] = max(pooled.event_latency_s.get(name, 0.0), value)
     return pooled
 
 
@@ -218,9 +215,7 @@ def format_table(results: list[ActivityMetrics]) -> str:
             else "-"
         )
         latency = (
-            f"{max(metrics.event_latency_s.values()):.2f}s"
-            if metrics.event_latency_s
-            else "-"
+            f"{max(metrics.event_latency_s.values()):.2f}s" if metrics.event_latency_s else "-"
         )
         recall = f"{metrics.recall:.1%}" if metrics.expected_total else "-"
         flag = "" if metrics.passed else "  FAIL"
@@ -232,9 +227,7 @@ def format_table(results: list[ActivityMetrics]) -> str:
     pooled = aggregate(results)
     lines.append("-" * width)
     events = f"{pooled.events_found}/{len(pooled.events_expected)}"
-    latency = (
-        f"{max(pooled.event_latency_s.values()):.2f}s" if pooled.event_latency_s else "-"
-    )
+    latency = f"{max(pooled.event_latency_s.values()):.2f}s" if pooled.event_latency_s else "-"
     lines.append(
         f"{'POOLED':32s} {pooled.recall:>8.1%} {events:>8s} {latency:>9s} "
         f"{pooled.forbidden_firings:>10d}"

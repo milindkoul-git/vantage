@@ -41,7 +41,7 @@ def _tracking_config(**kwargs) -> VantageConfig:
 class TestConfiguration:
     def test_tracking_requires_detection(self) -> None:
         """The tracker consumes detections; enabling it alone is meaningless."""
-        with pytest.raises(ConfigError, match="requires detection.enabled"):
+        with pytest.raises(ConfigError, match=r"requires detection.enabled"):
             VantageConfig(
                 detection=DetectionConfig(enabled=False),
                 tracking=TrackingConfig(enabled=True),
@@ -116,7 +116,7 @@ class TestConfiguration:
             load_config("configs/default.yaml", [override])
 
     def test_unknown_tracking_key_suggests_the_right_one(self) -> None:
-        with pytest.raises(ConfigError, match="did you mean 'min_hits'"):
+        with pytest.raises(ConfigError, match=r"did you mean 'min_hits'"):
             load_config("configs/default.yaml", ["tracking.min_hitz=2"])
 
 
@@ -219,12 +219,8 @@ class TestOverlay:
                 DetectionResult,
             )
 
-            det = Detection(
-                BoundingBox(100 + index, 100, 160 + index, 280), 0, "person", 0.9
-            )
-            out = tracker.update(
-                DetectionResult((det,), "t", index, index / 30.0, (640, 480))
-            )
+            det = Detection(BoundingBox(100 + index, 100, 160 + index, 280), 0, "person", 0.9)
+            out = tracker.update(DetectionResult((det,), "t", index, index / 30.0, (640, 480)))
         return out
 
     def test_draws_in_place_on_a_writeable_buffer(self) -> None:

@@ -176,9 +176,9 @@ class RTMPoseAdapter:
                 f"the {len(KEYPOINT_NAMES)}-point COCO layout"
             )
 
-        locations = np.stack(
-            [x_bins.argmax(axis=1), y_bins.argmax(axis=1)], axis=-1
-        ).astype(np.float32)
+        locations = np.stack([x_bins.argmax(axis=1), y_bins.argmax(axis=1)], axis=-1).astype(
+            np.float32
+        )
 
         # The weaker of the two axes, because a joint is only located as well as
         # its worst axis: a confident column paired with a flat row is a

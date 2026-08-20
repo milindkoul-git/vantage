@@ -70,9 +70,7 @@ class OnnxRuntimeBackend(InferenceBackend):
             device="cpu",
             version=ort.__version__,
             input_name=self._input_name,
-            input_shape=tuple(
-                dim if isinstance(dim, int) else -1 for dim in model_input.shape
-            ),
+            input_shape=tuple(dim if isinstance(dim, int) else -1 for dim in model_input.shape),
             precision="fp32",
             extra={
                 "providers": self._session.get_providers(),

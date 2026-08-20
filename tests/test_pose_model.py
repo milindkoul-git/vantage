@@ -140,7 +140,7 @@ class TestDecodedOutput:
         bottom = prepared.center[1] + prepared.scale[1] / 2
 
         assert len(keypoints) == len(KEYPOINT_NAMES)
-        for name, keypoint in zip(KEYPOINT_NAMES, keypoints):
+        for name, keypoint in zip(KEYPOINT_NAMES, keypoints, strict=False):
             assert left - 1 <= keypoint.x <= right + 1, name
             assert top - 1 <= keypoint.y <= bottom + 1, name
 
@@ -202,7 +202,7 @@ class TestBackendAgreement:
                 runtime.close()
 
         first, second = decoded
-        for name, a, b in zip(KEYPOINT_NAMES, first, second):
+        for name, a, b in zip(KEYPOINT_NAMES, first, second, strict=False):
             assert a.x == pytest.approx(b.x, abs=1.0), name
             assert a.y == pytest.approx(b.y, abs=1.0), name
 

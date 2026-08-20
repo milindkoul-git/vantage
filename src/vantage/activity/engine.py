@@ -38,9 +38,7 @@ class ActivityEngine:
         """Footage time seen so far."""
         return self._elapsed
 
-    def update(
-        self, state: StateResult, pose: PoseResult | None = None
-    ) -> ActivityResult:
+    def update(self, state: StateResult, pose: PoseResult | None = None) -> ActivityResult:
         """Advance every entity by ``state.elapsed_s`` and report activities."""
         self._elapsed += max(0.0, state.elapsed_s)
 

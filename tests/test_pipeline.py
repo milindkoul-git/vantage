@@ -7,16 +7,16 @@ import time
 
 import pytest
 
+from tests.fakes import FakeSource
 from vantage.config.schema import Backpressure, IngestConfig, IngestMode
 from vantage.core.clock import ManualClock
 from vantage.core.errors import SourceReadError
 from vantage.ingestion.pipeline import IngestionPipeline
 from vantage.ingestion.synthetic import SyntheticSource
-from tests.fakes import FakeSource
 
 
 def synthetic(frames: int | None = 12, **kwargs) -> SyntheticSource:
-    params = dict(width=64, height=48, fps=30.0, frames=frames, objects=1)
+    params = {"width": 64, "height": 48, "fps": 30.0, "frames": frames, "objects": 1}
     params.update(kwargs)
     return SyntheticSource(source_id="t", **params)
 
@@ -108,13 +108,15 @@ class TestThreadedMode:
 
     def test_capture_thread_error_surfaces_on_the_consumer_thread(self) -> None:
         source = FakeSource([1, 2, SourceReadError("device fell over")], source_id="live")
-        with IngestionPipeline(source, IngestConfig(queue_size=4)) as pipeline:
-            with pytest.raises(SourceReadError, match="device fell over"):
+        with IngestionPipeline(source, IngestConfig(queue_size=4)) as pipeline:  # noqa: SIM117 - nesting mirrors the setup order being tested
+            with pytest.raises(SourceReadError, match=r"device fell over"):
                 list(pipeline.frames())
 
     def test_shutdown_event_stops_delivery(self) -> None:
         shutdown = threading.Event()
-        pipeline = IngestionPipeline(synthetic(None), IngestConfig(queue_size=4), shutdown=shutdown)
+        pipeline = IngestionPipeline(
+            synthetic(None), IngestConfig(queue_size=4), shutdown=shutdown
+        )
         received = 0
         with pipeline:
             for _ in pipeline.frames():

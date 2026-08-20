@@ -11,13 +11,12 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
+from tests.fakes import FakeBackend, make_engine, yolox_prediction
 from vantage.core.errors import ConfigError
 from vantage.perception.adapters.yolox import YoloxAdapter
 from vantage.perception.contracts import BoundingBox, Detection, DetectionResult
 from vantage.perception.labels import COCO_80, get_label_set, register_label_set
 from vantage.perception.nms import batched_nms, nms
-
-from tests.fakes import FakeBackend, make_engine, yolox_prediction
 
 
 class TestBoundingBox:
@@ -33,7 +32,7 @@ class TestBoundingBox:
         assert BoundingBox(10, 20, 30, 60).bottom_center == (20, 60)
 
     def test_inverted_corners_are_rejected(self) -> None:
-        with pytest.raises(ValueError, match="inverted"):
+        with pytest.raises(ValueError, match=r"inverted"):
             BoundingBox(30, 10, 10, 20)
 
     def test_clipping_to_frame(self) -> None:
@@ -59,7 +58,7 @@ class TestBoundingBox:
 class TestDetectionContracts:
     def test_confidence_must_be_a_probability(self) -> None:
         for bad in (-0.1, 1.5):
-            with pytest.raises(ValueError, match="confidence"):
+            with pytest.raises(ValueError, match=r"confidence"):
                 Detection(BoundingBox(0, 0, 1, 1), 0, "person", bad)
 
     def test_result_is_iterable_and_sized(self) -> None:
@@ -229,7 +228,9 @@ class TestYoloxAdapter:
     def test_detections_are_clipped_to_the_frame(self) -> None:
         adapter = self.adapter()
         prepared = adapter.preprocess(np.zeros((416, 416, 3), dtype=np.uint8))
-        raw = yolox_prediction(class_id=0, objectness=0.9, class_score=0.9, width=1e3, height=1e3)
+        raw = yolox_prediction(
+            class_id=0, objectness=0.9, class_score=0.9, width=1e3, height=1e3
+        )
         detection = adapter.postprocess([raw], prepared, 0.3, 0.45, 100)[0]
         assert detection.box.x2 <= 416 and detection.box.y2 <= 416
 
@@ -243,19 +244,21 @@ class TestYoloxAdapter:
         adapter = self.adapter()
         prepared = adapter.preprocess(np.zeros((416, 416, 3), dtype=np.uint8))
         wrong = np.zeros((1, 100, 85), dtype=np.float32)
-        with pytest.raises(ValueError, match="grid expects"):
+        with pytest.raises(ValueError, match=r"grid expects"):
             adapter.postprocess([wrong], prepared, 0.3, 0.45, 100)
 
     def test_malformed_output_is_reported(self) -> None:
         adapter = self.adapter()
         prepared = adapter.preprocess(np.zeros((416, 416, 3), dtype=np.uint8))
-        with pytest.raises(ValueError, match="unexpected YOLOX output shape"):
-            adapter.postprocess([np.zeros((1, 10, 3), dtype=np.float32)], prepared, 0.3, 0.45, 10)
+        with pytest.raises(ValueError, match=r"unexpected YOLOX output shape"):
+            adapter.postprocess(
+                [np.zeros((1, 10, 3), dtype=np.float32)], prepared, 0.3, 0.45, 10
+            )
 
     def test_no_outputs_is_reported(self) -> None:
         adapter = self.adapter()
         prepared = adapter.preprocess(np.zeros((416, 416, 3), dtype=np.uint8))
-        with pytest.raises(ValueError, match="no output tensors"):
+        with pytest.raises(ValueError, match=r"no output tensors"):
             adapter.postprocess([], prepared, 0.3, 0.45, 10)
 
     def test_unknown_class_id_degrades_instead_of_crashing(self) -> None:
@@ -287,12 +290,12 @@ class TestDetectionEngine:
         assert engine.detect(frame).counts() == {"car": 1}
 
     def test_class_filter_rejects_labels_the_model_cannot_emit(self) -> None:
-        with pytest.raises(ConfigError, match="cannot produce"):
+        with pytest.raises(ConfigError, match=r"cannot produce"):
             make_engine(keep_classes=["unicorn"])
 
     def test_confidence_threshold_is_validated(self) -> None:
         for bad in (0.0, 1.0, 1.4):
-            with pytest.raises(ConfigError, match="confidence"):
+            with pytest.raises(ConfigError, match=r"confidence"):
                 make_engine(confidence=bad)
 
     def test_warmup_runs_inference_without_a_frame(self) -> None:
@@ -312,7 +315,7 @@ class TestDetectionEngine:
     def test_detect_after_close_is_rejected(self) -> None:
         engine, frame = make_engine()
         engine.close()
-        with pytest.raises(RuntimeError, match="closed"):
+        with pytest.raises(RuntimeError, match=r"closed"):
             engine.detect(frame)
 
     def test_info_describes_the_resolved_stack(self) -> None:

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import dataclasses
+
 import numpy as np
 import pytest
 
@@ -11,13 +13,13 @@ from vantage.core.metrics import Counter, LatencyTracker, MetricsRegistry, RateM
 
 
 def make_frame(**kwargs) -> Frame:
-    defaults = dict(
-        image=np.zeros((4, 6, 3), dtype=np.uint8),
-        index=0,
-        source_id="s",
-        capture_monotonic=10.0,
-        capture_wall=1_700_000_000.0,
-    )
+    defaults = {
+        "image": np.zeros((4, 6, 3), dtype=np.uint8),
+        "index": 0,
+        "source_id": "s",
+        "capture_monotonic": 10.0,
+        "capture_wall": 1_700_000_000.0,
+    }
     defaults.update(kwargs)
     return Frame(**defaults)
 
@@ -43,7 +45,10 @@ class TestFrame:
 
     def test_is_immutable(self) -> None:
         frame = make_frame()
-        with pytest.raises(Exception):
+        # FrozenInstanceError specifically: a bare Exception would also pass if
+        # the assignment failed for some unrelated reason, which would leave the
+        # frozen-ness of Frame untested while looking tested.
+        with pytest.raises(dataclasses.FrozenInstanceError):
             frame.index = 5  # type: ignore[misc]
 
     def test_age_uses_monotonic_base(self) -> None:

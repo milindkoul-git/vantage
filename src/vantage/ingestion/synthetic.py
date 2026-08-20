@@ -113,7 +113,9 @@ class SyntheticSource(FrameSource):
         for i, (x0, y0, vx, vy, radius, _color) in enumerate(self._motion):
             cx = _reflect(x0 + vx * t, radius, self._width - radius)
             cy = _reflect(y0 + vy * t, radius, self._height - radius)
-            states.append(SyntheticObject(object_id=i, cx=cx, cy=cy, radius=radius, label=f"obj{i}"))
+            states.append(
+                SyntheticObject(object_id=i, cx=cx, cy=cy, radius=radius, label=f"obj{i}")
+            )
         return states
 
     # -- FrameSource hooks ----------------------------------------------
@@ -189,7 +191,9 @@ class SyntheticSource(FrameSource):
         assert self._background is not None  # guaranteed by _open_impl
         image = self._background.copy()
 
-        for state, (_x0, _y0, _vx, _vy, _r, color) in zip(self.object_states(index), self._motion):
+        for state, (_x0, _y0, _vx, _vy, _r, color) in zip(
+            self.object_states(index), self._motion, strict=False
+        ):
             center = (int(round(state.cx)), int(round(state.cy)))
             radius = int(round(state.radius))
             cv2.circle(image, center, radius, color, -1, cv2.LINE_AA)

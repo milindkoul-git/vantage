@@ -60,10 +60,7 @@ class DiscoveryResult:
 
     def describe(self) -> str:
         if not self.detections:
-            return (
-                f"nothing matched {', '.join(self.prompts)} "
-                f"({self.elapsed_ms / 1000:.1f} s)"
-            )
+            return f"nothing matched {', '.join(self.prompts)} ({self.elapsed_ms / 1000:.1f} s)"
         summary = ", ".join(
             f"{count}x {label}" for label, count in sorted(self.counts().items())
         )
@@ -202,7 +199,7 @@ class DiscoveryEngine:
             self._backend.close()
             self._closed = True
 
-    def __enter__(self) -> "DiscoveryEngine":
+    def __enter__(self) -> DiscoveryEngine:
         return self
 
     def __exit__(self, *_exc: object) -> None:

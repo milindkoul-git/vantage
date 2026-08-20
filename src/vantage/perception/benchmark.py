@@ -38,9 +38,7 @@ ALL_TARGETS: tuple[tuple[str, str], ...] = (
 )
 
 
-def resolve_targets(
-    requested: str, availability: dict[str, bool]
-) -> list[tuple[str, str]]:
+def resolve_targets(requested: str, availability: dict[str, bool]) -> list[tuple[str, str]]:
     """Turn a ``--backends`` string into concrete (backend, device) pairs."""
     text = (requested or "all").strip().lower()
 
@@ -75,9 +73,7 @@ def benchmark(
     for backend, device in targets:
         record: dict[str, Any] = {"backend": backend, "device": device}
         try:
-            engine = build_engine(
-                spec.key, backend=backend, device=device, model_dir=model_dir
-            )
+            engine = build_engine(spec.key, backend=backend, device=device, model_dir=model_dir)
         except Exception as exc:
             # A device that is unavailable is a legitimate outcome to report,
             # not a reason to abandon the whole benchmark.
@@ -85,7 +81,9 @@ def benchmark(
             results.append(record)
             log.warning(
                 "backend unavailable for benchmark",
-                extra={"vantage_fields": {"backend": backend, "device": device, "error": str(exc)}},
+                extra={
+                    "vantage_fields": {"backend": backend, "device": device, "error": str(exc)}
+                },
             )
             continue
 

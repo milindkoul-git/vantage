@@ -166,7 +166,7 @@ def evaluate(
     id_overlap: dict[tuple[int, int], int] = {}
     total_predictions = 0
 
-    for frame, result in zip(scenario.frames, results):
+    for frame, result in zip(scenario.frames, results, strict=False):
         truth = list(frame.objects)
         # Coasting tracks are included: a tracker that publishes a predicted box
         # is asserting the object is there, and must be scored on whether it is.
@@ -403,5 +403,7 @@ def format_table(metrics: list[TrackingMetrics]) -> str:
             f"{'':>5} {'':>5} {int(summary['mostly_tracked']):>3d}/"
             f"{int(summary['gt_objects']):<3d}"
         )
-        lines.append(f"\nobjective score: {score(summary):.4f}   ({summary['mean_ms']:.2f} ms/frame)")
+        lines.append(
+            f"\nobjective score: {score(summary):.4f}   ({summary['mean_ms']:.2f} ms/frame)"
+        )
     return "\n".join(lines)

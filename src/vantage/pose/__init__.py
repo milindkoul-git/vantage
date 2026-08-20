@@ -23,16 +23,16 @@ from vantage.pose.contracts import (
 __all__ = [
     "FACE_KEYPOINTS",
     "KEYPOINT_NAMES",
+    "SKELETON",
     "Keypoint",
     "Pose",
+    "PoseEngine",
     "PoseResult",
-    "PostureEstimate",
     "Posture",
-    "SKELETON",
+    "PostureEstimate",
     "build_pose_engine",
     "classify",
     "empty_pose_result",
-    "PoseEngine",
 ]
 
 

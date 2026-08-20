@@ -16,8 +16,8 @@ extension point that keeps the ``SourceKind`` list from being closed.
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
 from pathlib import Path
-from typing import Callable
 from urllib.parse import parse_qsl, urlparse
 
 from vantage.config.schema import SourceConfig
@@ -150,6 +150,7 @@ def _parse_bare(text: str) -> ParsedURI:
 
 
 # -- factories ----------------------------------------------------------
+
 
 def _make_opencv(config: SourceConfig, parsed: ParsedURI, clock: Clock) -> FrameSource:
     from vantage.ingestion.opencv_source import OpenCVSource

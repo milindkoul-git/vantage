@@ -76,7 +76,7 @@ class OpenVinoBackend(InferenceBackend):
         if input_shapes:
             # A multi-input graph: every dynamic input must be pinned, not just
             # the image, or the GPU plugin refuses to compile at all.
-            model.reshape({name: shape for name, shape in input_shapes.items()})
+            model.reshape(dict(input_shapes.items()))
             log.debug(
                 "pinned all graph inputs to static shapes",
                 extra={"vantage_fields": {"inputs": sorted(input_shapes)}},
@@ -118,7 +118,7 @@ class OpenVinoBackend(InferenceBackend):
         # detections differ slightly from CPU ones - claiming fp32 here would
         # make that difference look like a bug.
         precision = "fp32"
-        try:
+        try:  # noqa: SIM105 - the comment below is the point
             precision = _normalise_precision(compiled.get_property("INFERENCE_PRECISION_HINT"))
         except Exception:  # pragma: no cover - property support varies by device
             pass
@@ -204,7 +204,6 @@ class OpenVinoBackend(InferenceBackend):
         self._core = None  # type: ignore[assignment]
 
 
-
 def _static_shape_for(model, input_shape: tuple[int, int] | None) -> list[int] | None:
     """The fully static input shape to compile with, or ``None`` to leave it alone."""
     partial = model.input(0).get_partial_shape()
@@ -224,8 +223,12 @@ def _normalise_precision(value: object) -> str:
     the other backend's plain ``fp32``.
     """
     text = str(value).lower()
-    for needle, name in (("float16", "fp16"), ("float32", "fp32"), ("bfloat16", "bf16"),
-                         ("int8", "int8")):
+    for needle, name in (
+        ("float16", "fp16"),
+        ("float32", "fp32"),
+        ("bfloat16", "bf16"),
+        ("int8", "int8"),
+    ):
         if needle in text:
             return name
     return text.strip("<>") or "unknown"

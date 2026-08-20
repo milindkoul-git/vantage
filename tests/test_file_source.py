@@ -91,9 +91,8 @@ class TestBlankSourceWarning:
             writer.write(np.zeros((48, 64, 3), dtype=np.uint8))
         writer.release()
 
-        with caplog.at_level("WARNING"):
-            with file_source(black):
-                pass
+        with caplog.at_level("WARNING"), file_source(black):
+            pass
         assert "blank frames" in caplog.text
 
     def test_detects_a_near_black_source_not_only_an_exactly_black_one(
@@ -119,17 +118,15 @@ class TestBlankSourceWarning:
             writer.write(rng.integers(0, 4, size=(48, 64, 3), dtype=np.uint8))
         writer.release()
 
-        with caplog.at_level("WARNING"):
-            with file_source(noisy):
-                pass
+        with caplog.at_level("WARNING"), file_source(noisy):
+            pass
         assert "blank frames" in caplog.text
 
     def test_stays_quiet_for_a_normal_source(
         self, sample_video: Path, caplog: pytest.LogCaptureFixture
     ) -> None:
-        with caplog.at_level("WARNING"):
-            with file_source(sample_video):
-                pass
+        with caplog.at_level("WARNING"), file_source(sample_video):
+            pass
         assert "blank frames" not in caplog.text
 
     def test_a_dark_but_real_scene_is_not_flagged(
@@ -149,21 +146,20 @@ class TestBlankSourceWarning:
             writer.write(frame)
         writer.release()
 
-        with caplog.at_level("WARNING"):
-            with file_source(dim):
-                pass
+        with caplog.at_level("WARNING"), file_source(dim):
+            pass
         assert "blank frames" not in caplog.text
 
 
 class TestFileErrors:
     def test_missing_file_names_the_path_and_suggests_a_fix(self, tmp_path: Path) -> None:
         source = file_source(tmp_path / "absent.mp4")
-        with pytest.raises(SourceOpenError, match="not found"):
+        with pytest.raises(SourceOpenError, match=r"not found"):
             source.open()
 
     def test_directory_is_rejected(self, tmp_path: Path) -> None:
         source = create_source(SourceConfig(uri=f"file:{tmp_path}"))
-        with pytest.raises(SourceOpenError, match="directory"):
+        with pytest.raises(SourceOpenError, match=r"directory"):
             source.open()
 
     def test_undecodable_file_is_reported_clearly(self, tmp_path: Path) -> None:

@@ -13,7 +13,7 @@ import pytest
 from vantage.core.errors import ConfigError
 from vantage.perception.contracts import BoundingBox
 from vantage.state import MotionState, StateEstimator, StateParams
-from vantage.tracking.contracts import Track, TrackState, TrackingResult
+from vantage.tracking.contracts import Track, TrackingResult, TrackState
 
 HEIGHT = 100.0
 
@@ -121,7 +121,9 @@ class TestMotionState:
             )
             far_result = step(far, [small], index=i)
         near_result = step(near, [make_track(velocity=(80.0, 0.0))], index=21)
-        assert near_result.states[0].speed == pytest.approx(far_result.states[0].speed, abs=0.01)
+        assert near_result.states[0].speed == pytest.approx(
+            far_result.states[0].speed, abs=0.01
+        )
 
 
 class TestHysteresis:
@@ -149,16 +151,21 @@ class TestHysteresis:
         """One fast frame does not flip a settled state."""
         estimator = StateEstimator(StateParams(min_state_s=0.5))
         drive(estimator, velocity=(0.0, 0.0), steps=20)
-        assert estimator.update(
-            TrackingResult(
-                tracks=(make_track(velocity=(80.0, 0.0)),),
-                source_id="t",
-                frame_index=99,
-                capture_wall=9.9,
-                frame_size=(640, 480),
-                elapsed_s=0.1,
+        assert (
+            estimator.update(
+                TrackingResult(
+                    tracks=(make_track(velocity=(80.0, 0.0)),),
+                    source_id="t",
+                    frame_index=99,
+                    capture_wall=9.9,
+                    frame_size=(640, 480),
+                    elapsed_s=0.1,
+                )
             )
-        ).states[0].motion is MotionState.STATIONARY
+            .states[0]
+            .motion
+            is MotionState.STATIONARY
+        )
 
     def test_sustained_change_is_eventually_published(self) -> None:
         estimator = StateEstimator(StateParams(min_state_s=0.5))
@@ -214,9 +221,7 @@ class TestDistance:
         for i in range(30):
             # Sub-pixel wobble around the same point.
             wobble = 0.4 if i % 2 else -0.4
-            result = step(
-                estimator, [make_track(center=(100.0 + wobble, 100.0))], index=51 + i
-            )
+            result = step(estimator, [make_track(center=(100.0 + wobble, 100.0))], index=51 + i)
         assert result.states[0].distance == pytest.approx(distance)
 
     def test_path_length_not_displacement(self) -> None:
@@ -300,7 +305,7 @@ class TestObservationRecord:
 
 class TestParams:
     def test_inverted_thresholds_are_rejected(self) -> None:
-        with pytest.raises(ConfigError, match="dead band"):
+        with pytest.raises(ConfigError, match=r"dead band"):
             StateParams(moving_above=0.1, stationary_below=0.5)
 
     def test_negative_values_are_rejected(self) -> None:

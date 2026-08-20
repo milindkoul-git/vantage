@@ -68,7 +68,9 @@ class WindowSink:
 
     __slots__ = ("_closed", "_created", "_scale", "_wait_ms", "_window_name")
 
-    def __init__(self, window_name: str = "Vantage", scale: float = 1.0, wait_ms: int = 1) -> None:
+    def __init__(
+        self, window_name: str = "Vantage", scale: float = 1.0, wait_ms: int = 1
+    ) -> None:
         self._window_name = window_name
         self._scale = scale
         self._wait_ms = max(1, wait_ms)
@@ -92,8 +94,7 @@ class WindowSink:
         except cv2.error as exc:  # pragma: no cover - GUI backend dependent
             self._closed = True
             raise VantageError(
-                f"the display window failed ({exc}). Run with --no-display to "
-                "operate headless."
+                f"the display window failed ({exc}). Run with --no-display to operate headless."
             ) from exc
 
         if self._window_was_closed():

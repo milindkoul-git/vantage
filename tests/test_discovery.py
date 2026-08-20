@@ -50,14 +50,14 @@ class TestPrompts:
         assert a.prompts == ["pen", "coffee mug"]
 
     def test_empty_prompts_are_rejected_with_an_example(self) -> None:
-        with pytest.raises(ConfigError, match="at least one prompt"):
+        with pytest.raises(ConfigError, match=r"at least one prompt"):
             adapter([])
-        with pytest.raises(ConfigError, match="at least one prompt"):
+        with pytest.raises(ConfigError, match=r"at least one prompt"):
             adapter(["", "   "])
 
     def test_missing_tokenizer_names_the_install_command(self) -> None:
         a = GroundingDinoAdapter(input_size=INPUT, labels=("prompt",))
-        with pytest.raises(ConfigError, match="pip install tokenizers"):
+        with pytest.raises(ConfigError, match=r"pip install tokenizers"):
             a.set_prompts(["pen"])
 
     def test_tokens_are_padded_to_a_static_length(self) -> None:
@@ -84,7 +84,7 @@ class TestPrompts:
         assert ids[int(mask.sum()) :].sum() == 0
 
     def test_too_many_prompts_fail_loudly(self) -> None:
-        with pytest.raises(ConfigError, match="over the"):
+        with pytest.raises(ConfigError, match=r"over the"):
             adapter([f"word{i}" for i in range(MAX_TOKENS)])
 
     def test_prompts_can_be_changed_without_rebuilding(self) -> None:
@@ -106,8 +106,10 @@ class TestPreprocess:
         assert prepared.original_size == (500, 300)
 
     def test_preprocess_without_prompts_is_an_error(self) -> None:
-        a = GroundingDinoAdapter(input_size=INPUT, labels=("prompt",), tokenizer=FakeTokenizer())
-        with pytest.raises(ConfigError, match="set_prompts"):
+        a = GroundingDinoAdapter(
+            input_size=INPUT, labels=("prompt",), tokenizer=FakeTokenizer()
+        )
+        with pytest.raises(ConfigError, match=r"set_prompts"):
             a.preprocess(np.zeros((10, 10, 3), dtype=np.uint8))
 
     def test_extra_inputs_are_supplied_for_the_fused_graph(self) -> None:
@@ -184,7 +186,7 @@ class TestPostprocess:
     def test_wrong_output_count_fails_loudly(self) -> None:
         a = adapter(["pen"])
         prepared = a.preprocess(np.zeros((100, 100, 3), dtype=np.uint8))
-        with pytest.raises(ValueError, match="two outputs"):
+        with pytest.raises(ValueError, match=r"two outputs"):
             a.postprocess([np.zeros((1, 2, 3))], prepared, 0.3, 0.5, 10)
 
 
@@ -192,11 +194,11 @@ class TestTierBoundary:
     """Discovery and live detection must not be confusable."""
 
     def test_fixed_vocabulary_models_are_rejected_with_a_pointer(self) -> None:
-        with pytest.raises(ConfigError, match="fixed-vocabulary"):
+        with pytest.raises(ConfigError, match=r"fixed-vocabulary"):
             build_discovery_engine(["pen"], model="yolox-nano")
 
     def test_the_error_names_the_right_command(self) -> None:
-        with pytest.raises(ConfigError, match="vantage run --model"):
+        with pytest.raises(ConfigError, match=r"vantage run --model"):
             build_discovery_engine(["pen"], model="dfine-s-obj365")
 
     def test_catalog_entry_is_marked_open_vocabulary(self) -> None:
@@ -212,7 +214,10 @@ class TestTierBoundary:
 class TestResult:
     def test_describes_an_empty_result_usefully(self) -> None:
         result = DiscoveryResult(
-            detections=(), prompts=("pen",), model="m", elapsed_ms=2100.0,
+            detections=(),
+            prompts=("pen",),
+            model="m",
+            elapsed_ms=2100.0,
             frame_size=(640, 480),
         )
         assert "nothing matched" in result.describe()
@@ -223,7 +228,10 @@ class TestResult:
 
         d = Detection(BoundingBox(0, 0, 10, 10), 0, "pen", 0.9)
         result = DiscoveryResult(
-            detections=(d, d), prompts=("pen",), model="m", elapsed_ms=2100.0,
+            detections=(d, d),
+            prompts=("pen",),
+            model="m",
+            elapsed_ms=2100.0,
             frame_size=(640, 480),
         )
         assert result.counts() == {"pen": 2}
@@ -316,5 +324,5 @@ class TestOnePassPerPrompt:
     def test_closed_engine_refuses_to_run(self) -> None:
         engine, _ = self._engine(["pen"])
         engine.close()
-        with pytest.raises(RuntimeError, match="closed"):
+        with pytest.raises(RuntimeError, match=r"closed"):
             engine.discover(np.zeros((10, 10, 3), dtype=np.uint8))

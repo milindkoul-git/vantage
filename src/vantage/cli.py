@@ -19,8 +19,8 @@ import argparse
 import json
 import platform
 import sys
+from collections.abc import Sequence
 from pathlib import Path
-from typing import Sequence
 
 from vantage import __version__
 from vantage.core.errors import VantageError
@@ -75,18 +75,28 @@ def build_parser() -> argparse.ArgumentParser:
     run = sub.add_parser(
         "run", parents=[common], help="ingest frames from the configured source"
     )
-    run.add_argument("--source", default=None, help="source URI (webcam:0, file path, synthetic://)")
-    run.add_argument("--id", dest="source_id", default=None, help="identifier stamped on frames")
-    run.add_argument("--backend", default=None, help="capture backend: auto, msmf, dshow, ffmpeg...")
+    run.add_argument(
+        "--source", default=None, help="source URI (webcam:0, file path, synthetic://)"
+    )
+    run.add_argument(
+        "--id", dest="source_id", default=None, help="identifier stamped on frames"
+    )
+    run.add_argument(
+        "--backend", default=None, help="capture backend: auto, msmf, dshow, ffmpeg..."
+    )
     run.add_argument("--width", type=int, default=None, help="requested capture width")
     run.add_argument("--height", type=int, default=None, help="requested capture height")
     run.add_argument("--fps", type=float, default=None, help="requested capture frame rate")
     run.add_argument("--fourcc", default=None, help="capture codec, e.g. MJPG")
     run.add_argument("--loop", action="store_true", help="restart file sources at EOF")
     run.add_argument("--frames", type=int, default=None, help="stop after N delivered frames")
-    run.add_argument("--target-fps", type=float, default=None, help="throttle delivery to N fps")
+    run.add_argument(
+        "--target-fps", type=float, default=None, help="throttle delivery to N fps"
+    )
     run.add_argument("--stride", type=int, default=None, help="deliver every Nth frame")
-    run.add_argument("--queue-size", type=int, default=None, help="frames buffered before the consumer")
+    run.add_argument(
+        "--queue-size", type=int, default=None, help="frames buffered before the consumer"
+    )
     run.add_argument("--mode", choices=["threaded", "inline"], default=None)
     run.add_argument(
         "--backpressure",
@@ -94,9 +104,13 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="what to discard when the consumer falls behind",
     )
-    run.add_argument("--realtime", action="store_true", help="pace recorded input to its own timeline")
+    run.add_argument(
+        "--realtime", action="store_true", help="pace recorded input to its own timeline"
+    )
     run.add_argument("--detect", action="store_true", help="enable object detection")
-    run.add_argument("--model", default=None, help="detector to use (see 'vantage models list')")
+    run.add_argument(
+        "--model", default=None, help="detector to use (see 'vantage models list')"
+    )
     run.add_argument(
         "--detect-backend", choices=["auto", "onnxruntime", "openvino"], default=None
     )
@@ -135,7 +149,9 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="estimate human pose for tracked people (implies --track)",
     )
-    run.add_argument("--pose-model", default=None, help="pose model (see 'vantage models list')")
+    run.add_argument(
+        "--pose-model", default=None, help="pose model (see 'vantage models list')"
+    )
     run.add_argument(
         "--pose-interval",
         type=int,
@@ -169,7 +185,9 @@ def build_parser() -> argparse.ArgumentParser:
         help="disable motion/dwell state estimation, which is otherwise on with tracking",
     )
     run.add_argument("--no-display", action="store_true", help="run headless")
-    run.add_argument("--no-hud", action="store_true", help="show video without the telemetry panel")
+    run.add_argument(
+        "--no-hud", action="store_true", help="show video without the telemetry panel"
+    )
     run.add_argument("--scale", type=float, default=None, help="window scale factor")
     run.add_argument("--json", action="store_true", help="print the run summary as JSON")
 
@@ -213,9 +231,7 @@ def build_parser() -> argparse.ArgumentParser:
     discover.add_argument("--device", choices=["auto", "cpu", "gpu"], default=None)
     discover.add_argument("--conf", type=float, default=0.3, help="confidence threshold")
     discover.add_argument("--model-dir", default=None)
-    discover.add_argument(
-        "--save", default=None, help="write an annotated PNG to this path"
-    )
+    discover.add_argument("--save", default=None, help="write an annotated PNG to this path")
     discover.add_argument("--json", action="store_true")
 
     track = sub.add_parser(
@@ -471,8 +487,7 @@ def _cmd_models(args: argparse.Namespace) -> int:
                     # column exists to say which it is. Sharing one number under
                     # a "CLASSES" heading would read as a 17-class detector.
                     "outputs": (
-                        "open" if spec.label_set == "open-vocabulary"
-                        else str(spec.num_classes)
+                        "open" if spec.label_set == "open-vocabulary" else str(spec.num_classes)
                     ),
                     "license": spec.license,
                     "cached": cached,
@@ -506,7 +521,9 @@ def _cmd_models(args: argparse.Namespace) -> int:
         return EXIT_OK
 
     if not args.name:
-        raise VantageError(f"'vantage models {args.action}' needs a model name, e.g. yolox-nano")
+        raise VantageError(
+            f"'vantage models {args.action}' needs a model name, e.g. yolox-nano"
+        )
     spec = get_model_spec(args.name)
 
     if args.action == "pull":
@@ -591,6 +608,7 @@ def _cmd_discover(args: argparse.Namespace) -> int:
         allow_download=config.detection.allow_download,
     )
     try:
+
         def _progress(index: int, total: int, prompt: str) -> None:
             print(f"  [{index + 1}/{total}] looking for {prompt!r}...", flush=True)
 
@@ -626,10 +644,7 @@ def _cmd_discover(args: argparse.Namespace) -> int:
         print(f"\n{origin}: {result.describe()}")
         for detection in result.detections:
             x1, y1, x2, y2 = detection.box.to_int()
-            print(
-                f"   {detection.label:<22} {detection.confidence:.2f}  "
-                f"[{x1},{y1},{x2},{y2}]"
-            )
+            print(f"   {detection.label:<22} {detection.confidence:.2f}  [{x1},{y1},{x2},{y2}]")
         if not result.detections:
             print("   (try a lower --conf, or different words)")
 
@@ -671,9 +686,7 @@ def _cmd_spatial(args: argparse.Namespace) -> int:
                             "seconds": scenario.seconds,
                             "actors": len(scenario.actors),
                             "zones": [z.name for z in scenario.zones],
-                            "expect": [
-                                f"{r.value}:{a}:{b}" for r, a, b in scenario.expect
-                            ],
+                            "expect": [f"{r.value}:{a}:{b}" for r, a, b in scenario.expect],
                             "forbidden": [
                                 f"{r.value}:{a}:{b}" for r, a, b in scenario.forbidden
                             ],
@@ -765,7 +778,9 @@ def _cmd_activity(args: argparse.Namespace) -> int:
         for name, scenario in SCENARIOS.items():
             print(f"  {name:32s} {scenario.duration_s:5.1f}s  {scenario.description}")
             if scenario.events:
-                print(f"  {'':32s}        expects: {', '.join(a.value for a in scenario.events)}")
+                print(
+                    f"  {'':32s}        expects: {', '.join(a.value for a in scenario.events)}"
+                )
             if scenario.forbidden:
                 print(
                     f"  {'':32s}        must never fire: "
@@ -787,7 +802,9 @@ def _cmd_activity(args: argparse.Namespace) -> int:
                             "scored_frames": m.scored_frames,
                             "events_found": m.events_found,
                             "events_expected": len(m.events_expected),
-                            "event_latency_s": {k: round(v, 3) for k, v in m.event_latency_s.items()},
+                            "event_latency_s": {
+                                k: round(v, 3) for k, v in m.event_latency_s.items()
+                            },
                             "forbidden_firings": m.forbidden_firings,
                             "passed": m.passed,
                         }

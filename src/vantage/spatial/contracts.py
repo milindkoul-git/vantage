@@ -30,10 +30,10 @@ metre near the lens is hundreds.
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from enum import Enum
-from typing import Iterator
 
 
 class Relation(str, Enum):
@@ -160,9 +160,7 @@ class RelationObservation:
 
     def __post_init__(self) -> None:
         if not 0.0 <= self.confidence <= 1.0:
-            raise ValueError(
-                f"relation confidence must be in [0, 1], got {self.confidence}"
-            )
+            raise ValueError(f"relation confidence must be in [0, 1], got {self.confidence}")
 
     @property
     def key(self) -> tuple[str, int, int]:
@@ -301,7 +299,7 @@ def to_scene_record(
     identity resolver can fill all of them.
     """
     return {
-        "timestamp": datetime.fromtimestamp(wall_time, tz=timezone.utc).isoformat(),
+        "timestamp": datetime.fromtimestamp(wall_time, tz=UTC).isoformat(),
         "camera_id": camera_id,
         "nodes": [
             {

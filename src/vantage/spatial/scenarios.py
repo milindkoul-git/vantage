@@ -74,9 +74,7 @@ class Actor:
         return Track(
             track_id=self.track_id,
             entity_id=f"{self.label}_{self.track_id}",
-            box=BoundingBox(
-                x - self.width / 2, y - self.height, x + self.width / 2, y
-            ),
+            box=BoundingBox(x - self.width / 2, y - self.height, x + self.width / 2, y),
             label=self.label,
             class_id=0,
             confidence=0.9,
@@ -141,7 +139,10 @@ SCENARIOS: dict[str, SpatialScenario] = {
         description="One person walks through a doorway zone and out the far side.",
         actors=(Actor(1, "person", ((60.0, 400.0), (580.0, 400.0))),),
         zones=(DOORWAY,),
-        expect_zone_events=((1, "doorway", ZoneEvent.ENTERED), (1, "doorway", ZoneEvent.EXITED)),
+        expect_zone_events=(
+            (1, "doorway", ZoneEvent.ENTERED),
+            (1, "doorway", ZoneEvent.EXITED),
+        ),
     ),
     "zone_overlap": SpatialScenario(
         name="zone_overlap",
@@ -152,7 +153,10 @@ SCENARIOS: dict[str, SpatialScenario] = {
         ),
         actors=(Actor(1, "person", ((230.0, 400.0),)),),
         zones=(LEFT_ZONE, DOORWAY),
-        expect_zone_events=((1, "left_half", ZoneEvent.ENTERED), (1, "doorway", ZoneEvent.ENTERED)),
+        expect_zone_events=(
+            (1, "left_half", ZoneEvent.ENTERED),
+            (1, "doorway", ZoneEvent.ENTERED),
+        ),
     ),
     "two_people_meet": SpatialScenario(
         name="two_people_meet",
@@ -306,9 +310,7 @@ def generate(scenario: SpatialScenario) -> list[SpatialFrame]:
     return frames
 
 
-def _velocity(
-    actor: Actor, previous: float, current: float, dt: float
-) -> tuple[float, float]:
+def _velocity(actor: Actor, previous: float, current: float, dt: float) -> tuple[float, float]:
     """Pixels per second along the actor's path, by finite difference."""
     if previous == current or dt <= 0:
         return (0.0, 0.0)

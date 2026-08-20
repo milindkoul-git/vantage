@@ -249,7 +249,7 @@ class FrameSource(ABC):
                 },
             )
 
-    def __enter__(self) -> "FrameSource":
+    def __enter__(self) -> FrameSource:
         self.open()
         return self
 

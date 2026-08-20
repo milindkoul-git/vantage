@@ -62,7 +62,9 @@ class ManualClock:
 
     __slots__ = ("_mono", "_wall", "slept")
 
-    def __init__(self, start_monotonic: float = 0.0, start_wall: float = 1_700_000_000.0) -> None:
+    def __init__(
+        self, start_monotonic: float = 0.0, start_wall: float = 1_700_000_000.0
+    ) -> None:
         self._mono = float(start_monotonic)
         self._wall = float(start_wall)
         self.slept: list[float] = []

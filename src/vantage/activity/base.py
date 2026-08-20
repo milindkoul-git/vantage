@@ -23,9 +23,7 @@ from vantage.state.contracts import EntityState
 class Recognizer(Protocol):
     """Turns a stream of per-entity observations into activities."""
 
-    def observe(
-        self, state: EntityState, pose: Pose | None, now: float
-    ) -> EntityActivity:
+    def observe(self, state: EntityState, pose: Pose | None, now: float) -> EntityActivity:
         """Record one frame for one entity and report what it is doing.
 
         Args:

@@ -106,9 +106,7 @@ class YoloxAdapter(ModelAdapter):
         # cxcywh -> xyxy in model-input space, then undo the letterbox. Padding is
         # top-left, so the scale factor alone maps back to original coordinates.
         half = boxes_cxcywh[:, 2:4] / 2.0
-        boxes = np.concatenate(
-            [boxes_cxcywh[:, :2] - half, boxes_cxcywh[:, :2] + half], axis=1
-        )
+        boxes = np.concatenate([boxes_cxcywh[:, :2] - half, boxes_cxcywh[:, :2] + half], axis=1)
         boxes /= max(prepared.scale, 1e-9)
 
         keep = batched_nms(boxes, scores, class_ids, iou_threshold)

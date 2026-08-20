@@ -17,10 +17,10 @@ slower than they are - and that limitation is real rather than hidden.
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from enum import Enum
-from typing import Iterator
 
 
 class MotionState(str, Enum):
@@ -96,7 +96,7 @@ class EntityState:
         if self.posture:
             observations.append({"type": self.posture, "confidence": None})
         return {
-            "timestamp": datetime.fromtimestamp(wall_time, tz=timezone.utc).isoformat(),
+            "timestamp": datetime.fromtimestamp(wall_time, tz=UTC).isoformat(),
             "camera_id": camera_id,
             "entity_id": self.entity_id,
             "entity_type": self.label,

@@ -28,10 +28,10 @@ list of things that are actually true.
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from enum import Enum
-from typing import Iterator
 
 
 class Activity(str, Enum):
@@ -97,9 +97,7 @@ class ActivityObservation:
 
     def __post_init__(self) -> None:
         if not 0.0 <= self.confidence <= 1.0:
-            raise ValueError(
-                f"activity confidence must be in [0, 1], got {self.confidence}"
-            )
+            raise ValueError(f"activity confidence must be in [0, 1], got {self.confidence}")
 
     def describe(self) -> str:
         return f"{self.activity.value} ({self.confidence:.2f}, {self.duration_s:.1f}s)"
@@ -142,7 +140,11 @@ class EntityActivity:
             return None
         return max(
             self.observations,
-            key=lambda o: (o.activity.is_transient, o.activity is not Activity.IDLE, o.confidence),
+            key=lambda o: (
+                o.activity.is_transient,
+                o.activity is not Activity.IDLE,
+                o.confidence,
+            ),
         )
 
     def describe(self) -> str:
@@ -220,7 +222,7 @@ def to_observation_record(
     than a schema migration.
     """
     record: dict[str, object] = {
-        "timestamp": datetime.fromtimestamp(wall_time, tz=timezone.utc).isoformat(),
+        "timestamp": datetime.fromtimestamp(wall_time, tz=UTC).isoformat(),
         "camera_id": camera_id,
         "entity_id": entity.entity_id,
         "entity_type": entity.label,

@@ -161,7 +161,9 @@ def _coerce(annotation: Any, value: Any, path: str) -> Any:
             )
         args = get_args(annotation)
         item_type = args[0] if args else str
-        return [_coerce(item_type, item, f"{path}[{index}]") for index, item in enumerate(value)]
+        return [
+            _coerce(item_type, item, f"{path}[{index}]") for index, item in enumerate(value)
+        ]
 
     if dataclasses.is_dataclass(annotation):
         return _build(annotation, value, path)

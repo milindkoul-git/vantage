@@ -36,7 +36,9 @@ class TestBackpressureResolution:
         assert resolve_backpressure(Backpressure.AUTO, is_live=False) is Backpressure.BLOCK
 
     def test_explicit_policy_is_respected(self) -> None:
-        assert resolve_backpressure(Backpressure.DROP_NEW, is_live=True) is Backpressure.DROP_NEW
+        assert (
+            resolve_backpressure(Backpressure.DROP_NEW, is_live=True) is Backpressure.DROP_NEW
+        )
 
     def test_auto_must_be_resolved_before_use(self) -> None:
         with pytest.raises(ValueError):
@@ -100,7 +102,9 @@ class TestBlockPolicy:
         buffer.put(frame(0))
         results: list[bool] = []
 
-        thread = threading.Thread(target=lambda: results.append(buffer.put(frame(1), timeout=5.0)))
+        thread = threading.Thread(
+            target=lambda: results.append(buffer.put(frame(1), timeout=5.0))
+        )
         thread.start()
         buffer.close()
         thread.join(timeout=5.0)

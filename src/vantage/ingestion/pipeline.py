@@ -208,7 +208,10 @@ class IngestionPipeline:
             self._delivery_rate.tick(now)
             self._delivery_latency.observe(frame.age_ms(now))
             yield frame
-            if self._config.max_frames is not None and self._delivered >= self._config.max_frames:
+            if (
+                self._config.max_frames is not None
+                and self._delivered >= self._config.max_frames
+            ):
                 log.debug(
                     "frame limit reached",
                     extra={"vantage_fields": {"max_frames": self._config.max_frames}},
@@ -275,7 +278,7 @@ class IngestionPipeline:
             },
         )
 
-    def __enter__(self) -> "IngestionPipeline":
+    def __enter__(self) -> IngestionPipeline:
         self.start()
         return self
 
@@ -312,7 +315,7 @@ class IngestionPipeline:
                     return
                 # A False return means the policy dropped it; the buffer counts it.
                 self._buffer.put(frame, timeout=_POLL_TIMEOUT_S)
-        except BaseException as exc:  # noqa: BLE001 - re-raised on the consumer thread
+        except BaseException as exc:
             self._error = exc
             self._error_counter.inc()
             log.error(

@@ -22,14 +22,14 @@ from vantage.perception.contracts import Detection, DetectionResult
 
 if TYPE_CHECKING:  # tracking is optional at render time; the overlay must not
     # make it an import-time requirement for plain detection display.
-    from vantage.tracking.contracts import Track, TrackingResult
-    from vantage.pose.contracts import PoseResult
     from vantage.activity.contracts import ActivityResult
+    from vantage.pose.contracts import PoseResult
     from vantage.spatial.contracts import SpatialResult, Zone
+    from vantage.tracking.contracts import Track, TrackingResult
 
 from vantage.activity.contracts import Activity
-from vantage.spatial.contracts import Relation
 from vantage.pose.contracts import SKELETON, Posture
+from vantage.spatial.contracts import Relation
 
 _FONT = cv2.FONT_HERSHEY_SIMPLEX
 
@@ -91,7 +91,9 @@ def _draw_one(
     else:
         cv2.rectangle(canvas, (x1, y1), (x2, y2), color, thickness, cv2.LINE_AA)
 
-    text = f"{detection.label} {detection.confidence:.2f}" if show_confidence else detection.label
+    text = (
+        f"{detection.label} {detection.confidence:.2f}" if show_confidence else detection.label
+    )
     (text_w, text_h), baseline = cv2.getTextSize(text, _FONT, scale, 1)
 
     # Put the label inside the box when there is no room above it, so labels on
@@ -116,7 +118,7 @@ def _draw_one(
 
 def draw_tracks(
     image: np.ndarray,
-    result: "TrackingResult",
+    result: TrackingResult,
     *,
     show_confidence: bool = False,
     thickness: int = 2,
@@ -162,7 +164,7 @@ def track_color(track_id: int) -> tuple[int, int, int]:
 
 def _draw_track_box(
     canvas: np.ndarray,
-    track: "Track",
+    track: Track,
     color: tuple[int, int, int],
     scale: float,
     thickness: int,
@@ -246,7 +248,7 @@ def _readable_text_color(background: tuple[int, int, int]) -> tuple[int, int, in
 
 def draw_poses(
     image: np.ndarray,
-    result: "PoseResult",
+    result: PoseResult,
     *,
     min_confidence: float = 0.3,
     thickness: int = 2,
@@ -318,8 +320,8 @@ def _draw_label(
 
 def draw_activities(
     image: np.ndarray,
-    result: "ActivityResult",
-    tracking: "TrackingResult",
+    result: ActivityResult,
+    tracking: TrackingResult,
     *,
     show_idle: bool = False,
 ) -> np.ndarray:
@@ -361,8 +363,8 @@ def draw_activities(
 
 def draw_zones(
     image: np.ndarray,
-    zones: "tuple[Zone, ...]",
-    result: "SpatialResult | None" = None,
+    zones: tuple[Zone, ...],
+    result: SpatialResult | None = None,
     *,
     thickness: int = 2,
 ) -> np.ndarray:
@@ -396,8 +398,8 @@ def draw_zones(
 
 def draw_relations(
     image: np.ndarray,
-    result: "SpatialResult",
-    tracking: "TrackingResult",
+    result: SpatialResult,
+    tracking: TrackingResult,
     *,
     thickness: int = 2,
 ) -> np.ndarray:

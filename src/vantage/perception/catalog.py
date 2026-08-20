@@ -168,7 +168,8 @@ CATALOG: dict[str, ModelSpec] = {
         source="https://github.com/Peterande/D-FINE",
         description="Larger D-FINE. More accurate, roughly twice the cost of the small one.",
         map_50_95=None,
-    ),    "grounding-dino-tiny": ModelSpec(
+    ),
+    "grounding-dino-tiny": ModelSpec(
         key="grounding-dino-tiny",
         filename="grounding_dino_tiny_fp16.onnx",
         url=f"{_ONNX_COMMUNITY}/grounding-dino-tiny-ONNX/resolve/main/onnx/model_fp16.onnx",

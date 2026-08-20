@@ -39,15 +39,15 @@ from __future__ import annotations
 from collections import Counter, deque
 from dataclasses import dataclass
 
-from vantage.core.errors import ConfigError
 from vantage.activity.contracts import Activity, ActivityObservation, EntityActivity
+from vantage.core.errors import ConfigError
 from vantage.pose.contracts import (
     LEFT_SHOULDER,
     LEFT_WRIST,
-    Pose,
-    Posture,
     RIGHT_SHOULDER,
     RIGHT_WRIST,
+    Pose,
+    Posture,
 )
 from vantage.state.contracts import EntityState, MotionState
 
@@ -78,7 +78,7 @@ single sample, which trivially "supports" any rule at 100%. One frame at
 6 h/s after a gap was reported as running."""
 
 
-def _support(window: list["_Sample"], threshold: float) -> float:
+def _support(window: list[_Sample], threshold: float) -> float:
     """Fraction of a window at or above a speed threshold."""
     return sum(1 for sample in window if sample.speed >= threshold) / len(window)
 
@@ -189,7 +189,7 @@ class _Sample:
 class _EntityBuffer:
     """Per-entity history plus the transitions found in it."""
 
-    __slots__ = ("samples", "stable_posture", "stable_since", "events", "first_seen")
+    __slots__ = ("events", "first_seen", "samples", "stable_posture", "stable_since")
 
     def __init__(self, now: float, history: int) -> None:
         self.samples: deque[_Sample] = deque(maxlen=history)
@@ -228,9 +228,7 @@ class RuleRecognizer:
         for track_id in self._buffers.keys() - track_ids:
             del self._buffers[track_id]
 
-    def observe(
-        self, state: EntityState, pose: Pose | None, now: float
-    ) -> EntityActivity:
+    def observe(self, state: EntityState, pose: Pose | None, now: float) -> EntityActivity:
         """Record one frame for an entity and report what it is doing."""
         buffer = self._buffers.get(state.track_id)
         if buffer is None:
@@ -341,9 +339,7 @@ class RuleRecognizer:
     def _transients(self, buffer: _EntityBuffer, now: float) -> list[ActivityObservation]:
         """Recent one-off events, held briefly so slow consumers see them."""
         buffer.events = [
-            event
-            for event in buffer.events
-            if now - event[1] <= self._params.transient_hold_s
+            event for event in buffer.events if now - event[1] <= self._params.transient_hold_s
         ]
         return [
             ActivityObservation(
@@ -370,9 +366,10 @@ class RuleRecognizer:
         if window is None:
             return None
 
-        running = state.speed >= self._params.running_speed and _support(
-            window, self._params.running_speed * 0.8
-        ) >= _MAJORITY
+        running = (
+            state.speed >= self._params.running_speed
+            and _support(window, self._params.running_speed * 0.8) >= _MAJORITY
+        )
         activity = Activity.RUNNING if running else Activity.WALKING
         threshold = self._params.running_speed if running else self._params.walking_speed
         support = _support(window, threshold)
@@ -392,9 +389,7 @@ class RuleRecognizer:
             ),
         )
 
-    def _sustained_window(
-        self, buffer: _EntityBuffer, now: float
-    ) -> list[_Sample] | None:
+    def _sustained_window(self, buffer: _EntityBuffer, now: float) -> list[_Sample] | None:
         """The last ``sustain_s`` of samples, once that much history exists.
 
         The history check reads the *oldest sample in the buffer*, not the
@@ -476,7 +471,10 @@ def _arm_raised(pose: Pose | None, min_confidence: float) -> tuple[bool, float]:
         return False, 0.0
 
     best = 0.0
-    for wrist_index, shoulder_index in ((LEFT_WRIST, LEFT_SHOULDER), (RIGHT_WRIST, RIGHT_SHOULDER)):
+    for wrist_index, shoulder_index in (
+        (LEFT_WRIST, LEFT_SHOULDER),
+        (RIGHT_WRIST, RIGHT_SHOULDER),
+    ):
         wrist = pose.keypoint(wrist_index)
         shoulder = pose.keypoint(shoulder_index)
         if wrist is None or shoulder is None:

@@ -285,8 +285,8 @@ because the next phase needs to *query* it, and `identity` is present and always
 that something does **not** fire. `vantage spatial eval` exits non-zero on
 failure.
 
-**649 tests** (+49), 630 of which need no camera, no model file and no inference
-runtime.
+**681 tests**, 662 of which need no camera, no model file and no inference
+runtime; the remaining 19 exercise real weights and deselect cleanly.
 
 ---
 
@@ -1242,6 +1242,100 @@ an emergent one.
 | Overlay | verified by rendering: coasting boxes dashed, entity ids and motion trails drawn, HUD reports `1 shown (0 seen, 1 predicted)` |
 
 ---
+
+## 7b. Running this in production
+
+Everything above measures whether the analysis is *correct*. This section is
+about whether the process survives a fortnight on a camera, which is a different
+question and was addressed as its own pass rather than assumed.
+
+### A failing stage no longer stops the run
+
+Every analysis stage was called directly inside the run loop with a single
+`try` around the whole thing. That is fine for a benchmark and wrong for a
+deployment: one malformed frame, one transient driver fault, and a camera that
+was meant to run for weeks stops. This platform has already met exactly such a
+fault, when the iGPU returned `CL_EXEC_STATUS_ERROR_FOR_EVENTS_IN_WAIT_LIST`.
+
+Each stage now runs behind a guard. Measured by injecting faults into a real
+detector:
+
+| Injected fault | Before | After |
+|---|---|---|
+| Fails every 3rd frame | run dies on frame 3 | **all 30 frames complete**, 20 detections, 10 failures logged |
+| Fails every frame | run dies on frame 1 | **all 30 frames complete**, stage disabled after 5, `DEGRADED` in summary |
+
+This is not silent exception handling, which this project forbids. Every failure
+is logged - the first with a traceback - every failure is counted into the run
+summary and the HUD, and a stage that fails `app.stage_failure_budget` times in
+a row is **disabled with an ERROR naming it**, because a stage failing every
+frame is broken rather than unlucky and retrying it forever produces the worst
+available outcome: a system neither working nor obviously broken.
+
+`MemoryError` and `KeyboardInterrupt` are deliberately never caught. Skipping a
+frame does not give memory back, and the second is the operator asking to stop.
+
+### CPU and memory, without a dependency
+
+The spec asks for both under observability, and for a long-running process a
+slow leak is the characteristic failure - invisible in a frame rate until the
+machine swaps. psutil would have worked and was declined for one number: CPU
+comes from `time.process_time()` and memory from one platform call each
+(`GetProcessMemoryInfo`, `/proc/self/statm`, `getrusage`). Where a platform is
+not covered, memory reports **`None`** rather than zero, because a silent zero
+would make a leak look like perfect health.
+
+CPU is reported in **cores** - 1.0 is one core saturated - rather than a
+percentage that means different things on different machines.
+
+### Memory over a long run, measured
+
+Full analysis chain over a synthetic source:
+
+| Frames | RSS at end | Growth | Per frame |
+|---|---|---|---|
+| 500 | 67.3 MB | +18.5 MB | 37,000 B |
+| 2,000 | 66.7 MB | +9.4 MB | 4,700 B |
+| 6,000 | 67.9 MB | +9.9 MB | 1,650 B |
+
+Resident memory is **flat at ~67 MB** whether the run is 500 frames or 6,000,
+and per-frame growth *falls* as the run lengthens. That is the signature of
+one-off warmup allocation, not retention. `pytest -m slow` asserts it.
+
+### CI gates on the ground-truth harnesses
+
+`.github/workflows/ci.yml` runs on Linux and Windows, Python 3.11 and 3.13. As
+well as lint, format and unit tests, it runs the three accuracy harnesses as
+build gates:
+
+```bash
+vantage track eval      # tracker: MOTA, IDF1, identity switches
+vantage activity eval   # activity: recall, event latency, forbidden firings
+vantage spatial eval    # spatial: relations, zone crossings, forbidden firings
+```
+
+Each already exits non-zero when a scenario regresses, so a change that quietly
+makes the tracker worse - or makes the fall rule fire when someone lies down
+deliberately - fails the build instead of being noticed months later. No weights
+are downloaded; the ~19 tests needing real ONNX files deselect themselves.
+
+Both platforms are built because the platform-specific paths genuinely differ:
+memory reporting uses `/proc` on one and psapi on the other.
+
+### One bug this pass found in itself
+
+Wrapping each stage introduced eleven closures of the form
+`lambda: detect(frame)` over a loop variable - the exact shape of a late-binding
+bug. They were safe, because the guard calls them immediately, but nothing in
+the signature said so and a later change that deferred the call would have
+turned eleven safe closures into eleven wrong ones at once. `StageGuard.run`
+now takes the arguments instead of a closure, which makes the whole class of
+mistake unavailable. Ruff's `B023` is what surfaced it.
+
+Also fixed while wiring the memory probe: the Windows call returned failure
+every time because the process handle was passed as an undeclared integer,
+which ctypes truncates to 32 bits. Memory read as "unavailable on this
+platform" on the platform it was written for.
 
 ## 8. Known limitations
 

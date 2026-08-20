@@ -70,9 +70,8 @@ class TestSourceLifecycle:
 
     def test_context_manager_closes_on_exception(self) -> None:
         source = FakeSource([1])
-        with pytest.raises(RuntimeError):
-            with source:
-                raise RuntimeError("consumer blew up")
+        with pytest.raises(RuntimeError), source:
+            raise RuntimeError("consumer blew up")
         assert source.state is SourceState.CLOSED
 
     def test_cannot_be_reopened_after_close(self) -> None:
@@ -154,9 +153,13 @@ class TestSyntheticSource:
 
 class TestReconnectingSource:
     def policy(self, **kwargs) -> ReconnectConfig:
-        defaults = dict(
-            enabled=True, max_attempts=3, initial_delay_s=0.01, max_delay_s=0.05, backoff=2.0
-        )
+        defaults = {
+            "enabled": True,
+            "max_attempts": 3,
+            "initial_delay_s": 0.01,
+            "max_delay_s": 0.05,
+            "backoff": 2.0,
+        }
         defaults.update(kwargs)
         return ReconnectConfig(**defaults)
 
@@ -201,7 +204,7 @@ class TestReconnectingSource:
             clock=ManualClock(),
         )
         source.open()
-        with pytest.raises(SourceReadError, match="did not recover"):
+        with pytest.raises(SourceReadError, match=r"did not recover"):
             source.read()
 
     def test_backoff_is_capped(self) -> None:
@@ -214,7 +217,9 @@ class TestReconnectingSource:
             factory=factory,
             source_id="cam",
             uri="fake://",
-            policy=self.policy(max_attempts=5, initial_delay_s=1.0, max_delay_s=4.0, backoff=2.0),
+            policy=self.policy(
+                max_attempts=5, initial_delay_s=1.0, max_delay_s=4.0, backoff=2.0
+            ),
             clock=clock,
         )
         source.open()
@@ -245,5 +250,5 @@ class TestReconnectingSource:
         source = ReconnectingSource(
             factory=factory, source_id="cam", uri="fake://", policy=self.policy()
         )
-        with pytest.raises(SourceOpenError, match="camera absent"):
+        with pytest.raises(SourceOpenError, match=r"camera absent"):
             source.open()

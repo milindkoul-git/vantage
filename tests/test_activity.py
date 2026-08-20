@@ -71,9 +71,7 @@ def make_pose(
 ) -> Pose:
     keypoints = [Keypoint(0.0, 0.0, 0.0) for _ in KEYPOINT_NAMES]
     keypoints[LEFT_SHOULDER] = Keypoint(120.0, 80.0, shoulder_confidence)
-    keypoints[LEFT_WRIST] = Keypoint(
-        120.0, 40.0 if arm_raised else 140.0, wrist_confidence
-    )
+    keypoints[LEFT_WRIST] = Keypoint(120.0, 40.0 if arm_raised else 140.0, wrist_confidence)
     return Pose(
         keypoints=tuple(keypoints),
         track_id=1,
@@ -105,7 +103,7 @@ def drive(
 
 class TestContracts:
     def test_confidence_is_bounded(self) -> None:
-        with pytest.raises(ValueError, match="confidence"):
+        with pytest.raises(ValueError, match=r"confidence"):
             ActivityObservation(Activity.WALKING, 1.4, 0.0, "x")
 
     def test_transient_events_outrank_continuous_ones(self) -> None:
@@ -172,11 +170,11 @@ class TestContracts:
 
 class TestParams:
     def test_running_must_exceed_walking(self) -> None:
-        with pytest.raises(ConfigError, match="must exceed"):
+        with pytest.raises(ConfigError, match=r"must exceed"):
             ActivityParams(walking_speed=1.0, running_speed=0.5)
 
     def test_fall_window_cannot_exceed_the_transition_window(self) -> None:
-        with pytest.raises(ConfigError, match="fall_window_s"):
+        with pytest.raises(ConfigError, match=r"fall_window_s"):
             ActivityParams(fall_window_s=5.0, transition_window_s=2.0)
 
     def test_negative_durations_are_rejected(self) -> None:
@@ -203,9 +201,7 @@ class TestLocomotion:
             seconds=2.0,
             state_factory=lambda t: make_state(speed=0.7, motion=MotionState.MOVING),
         )
-        spike = recognizer.observe(
-            make_state(speed=6.0, motion=MotionState.MOVING), None, 99.0
-        )
+        spike = recognizer.observe(make_state(speed=6.0, motion=MotionState.MOVING), None, 99.0)
         assert not spike.has(Activity.RUNNING)
 
     def test_sustained_running_is_reported(self) -> None:
@@ -222,9 +218,7 @@ class TestLocomotion:
         """Regression: the sustain check once compared a window against its own
         width, which floating point loses, and every continuous rule scored zero."""
         recognizer = RuleRecognizer()
-        first = recognizer.observe(
-            make_state(speed=0.7, motion=MotionState.MOVING), None, DT
-        )
+        first = recognizer.observe(make_state(speed=0.7, motion=MotionState.MOVING), None, DT)
         assert first.has(Activity.IDLE)
 
         activity, _ = drive(
@@ -270,9 +264,9 @@ class TestLoitering:
         long, _ = drive(
             recognizer, seconds=0.5, state_factory=lambda t: make_state(dwell_s=40.0)
         )
-        assert long.get(Activity.LOITERING).confidence > short.get(
-            Activity.LOITERING
-        ).confidence
+        assert (
+            long.get(Activity.LOITERING).confidence > short.get(Activity.LOITERING).confidence
+        )
 
 
 class TestPostureTransitions:
@@ -422,9 +416,7 @@ class TestWithoutPose:
 
     def test_no_posture_activity_is_invented(self) -> None:
         recognizer = RuleRecognizer()
-        activity, _ = drive(
-            recognizer, seconds=5.0, state_factory=lambda t: make_state()
-        )
+        activity, _ = drive(recognizer, seconds=5.0, state_factory=lambda t: make_state())
         for posture_derived in (
             Activity.FALLING,
             Activity.SITTING_DOWN,
@@ -506,7 +498,7 @@ class TestEngine:
         assert result.pose_available
 
     def test_pose_absent_is_recorded(self) -> None:
-        """"Did not happen" and "could not be seen" are different answers."""
+        """ "Did not happen" and "could not be seen" are different answers."""
         engine = ActivityEngine()
         result = engine.update(self.state_result([make_state()]))
         assert not result.pose_available
@@ -539,9 +531,7 @@ class TestScenarioSuite:
 
     def test_nothing_forbidden_ever_fires(self) -> None:
         for metrics in self.all_results():
-            assert metrics.forbidden_firings == 0, (
-                f"{metrics.scenario}: {metrics.unexpected}"
-            )
+            assert metrics.forbidden_firings == 0, f"{metrics.scenario}: {metrics.unexpected}"
 
     def test_every_expected_event_fires_exactly_once(self) -> None:
         """Twice is two alerts for one fall."""
@@ -573,7 +563,7 @@ class TestConfigWiring:
             VantageConfig,
         )
 
-        with pytest.raises(ConfigError, match="requires state.enabled"):
+        with pytest.raises(ConfigError, match=r"requires state.enabled"):
             VantageConfig(
                 detection=DetectionConfig(enabled=True),
                 tracking=TrackingConfig(enabled=True),
@@ -612,7 +602,7 @@ class TestConfigWiring:
             VantageConfig,
         )
 
-        with pytest.raises(ConfigError, match="moving and idle in the same frame"):
+        with pytest.raises(ConfigError, match=r"moving and idle in the same frame"):
             VantageConfig(
                 detection=DetectionConfig(enabled=True),
                 tracking=TrackingConfig(enabled=True),

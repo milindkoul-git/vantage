@@ -48,12 +48,12 @@ from vantage.pose.contracts import (
     LEFT_HIP,
     LEFT_KNEE,
     LEFT_SHOULDER,
-    Pose,
-    Posture,
     RIGHT_ANKLE,
     RIGHT_HIP,
     RIGHT_KNEE,
     RIGHT_SHOULDER,
+    Pose,
+    Posture,
 )
 
 LYING_ANGLE_DEG = 55.0
@@ -179,9 +179,7 @@ def classify(pose: Pose, min_keypoint_confidence: float = 0.3) -> PostureEstimat
     )
 
 
-def _visible_joints(
-    pose: Pose, threshold: float
-) -> dict[int, tuple[float, float, float]]:
+def _visible_joints(pose: Pose, threshold: float) -> dict[int, tuple[float, float, float]]:
     """Landmarks above ``threshold``, keyed by full COCO index."""
     found: dict[int, tuple[float, float, float]] = {}
     for index in pose.visible(threshold):

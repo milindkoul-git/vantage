@@ -56,7 +56,7 @@ class InferenceBackend(ABC):
     def close(self) -> None:
         """Release the compiled model and any device resources."""
 
-    def __enter__(self) -> "InferenceBackend":
+    def __enter__(self) -> InferenceBackend:
         return self
 
     def __exit__(self, *_exc: object) -> None:

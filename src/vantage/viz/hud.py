@@ -24,13 +24,15 @@ import numpy as np
 from vantage.ingestion.pipeline import PipelineStats
 
 if TYPE_CHECKING:  # imported for typing only - viz must not require a detector
+    from vantage.activity.contracts import ActivityResult
+    from vantage.core.resilience import StageRegistry
+    from vantage.core.resources import ResourceSample
     from vantage.perception.contracts import DetectionResult
     from vantage.perception.engine import EngineInfo
-    from vantage.tracking.contracts import TrackingResult
     from vantage.pose.contracts import PoseResult
-    from vantage.state.contracts import StateResult
-    from vantage.activity.contracts import ActivityResult
     from vantage.spatial.contracts import SpatialResult
+    from vantage.state.contracts import StateResult
+    from vantage.tracking.contracts import TrackingResult
 
 _FONT = cv2.FONT_HERSHEY_SIMPLEX
 _WHITE = (245, 245, 245)
@@ -54,14 +56,16 @@ class HudRenderer:
         stats: PipelineStats,
         frame_index: int,
         extra: list[str] | None = None,
-        detection: "DetectionResult | None" = None,
-        engine: "EngineInfo | None" = None,
-        tracking: "TrackingResult | None" = None,
+        detection: DetectionResult | None = None,
+        engine: EngineInfo | None = None,
+        tracking: TrackingResult | None = None,
         entity_total: int = 0,
-        pose: "PoseResult | None" = None,
-        state: "StateResult | None" = None,
-        activity: "ActivityResult | None" = None,
-        spatial: "SpatialResult | None" = None,
+        pose: PoseResult | None = None,
+        state: StateResult | None = None,
+        activity: ActivityResult | None = None,
+        spatial: SpatialResult | None = None,
+        stages: StageRegistry | None = None,
+        resources: ResourceSample | None = None,
     ) -> np.ndarray:
         """Return an annotated copy of ``image``.
 
@@ -84,6 +88,10 @@ class HudRenderer:
             lines.extend(self._compose_activity(activity))
         if spatial is not None:
             lines.extend(self._compose_spatial(spatial))
+        if resources is not None:
+            lines.append(("cpu/mem", resources.describe(), _DIM))
+        if stages is not None:
+            lines.extend(self._compose_health(stages))
         if extra:
             lines.extend(("", value, _DIM) for value in extra)
 
@@ -107,12 +115,26 @@ class HudRenderer:
         rows: list[tuple[str, str, tuple[int, int, int]]] = [
             ("source", f"{stats.source_id}  ({stats.kind}/{stats.backend})", _ACCENT),
             ("uri", _shorten(stats.uri, 46), _DIM),
-            ("resolution", f"{stats.resolution}"
-             + (f" @ {stats.declared_fps:g} fps" if stats.declared_fps else " @ fps unknown"), _WHITE),
+            (
+                "resolution",
+                f"{stats.resolution}"
+                + (
+                    f" @ {stats.declared_fps:g} fps" if stats.declared_fps else " @ fps unknown"
+                ),
+                _WHITE,
+            ),
             ("frame", f"#{frame_index}   delivered {stats.frames_delivered}", _WHITE),
-            ("fps", f"{stats.delivery_fps:5.1f} out / {stats.capture_fps:5.1f} in"
-                    f"   (mean {stats.mean_delivery_fps:.1f})", fps_colour),
-            ("latency", f"p50 {stats.latency_ms_p50:.1f} ms   p95 {stats.latency_ms_p95:.1f} ms", _WHITE),
+            (
+                "fps",
+                f"{stats.delivery_fps:5.1f} out / {stats.capture_fps:5.1f} in"
+                f"   (mean {stats.mean_delivery_fps:.1f})",
+                fps_colour,
+            ),
+            (
+                "latency",
+                f"p50 {stats.latency_ms_p50:.1f} ms   p95 {stats.latency_ms_p95:.1f} ms",
+                _WHITE,
+            ),
             ("acquire", f"p50 {stats.acquire_ms_p50:.1f} ms", _DIM),
         ]
 
@@ -144,14 +166,18 @@ class HudRenderer:
         return rows
 
     def _compose_detection(
-        self, detection: "DetectionResult | None", engine: "EngineInfo | None"
+        self, detection: DetectionResult | None, engine: EngineInfo | None
     ) -> list[tuple[str, str, tuple[int, int, int]]]:
         """Detection telemetry, shown only when a detector is attached."""
         if engine is None:
             return []
 
         rows: list[tuple[str, str, tuple[int, int, int]]] = [
-            ("model", f"{engine.model} on {engine.backend}/{engine.device} ({engine.precision})", _ACCENT),
+            (
+                "model",
+                f"{engine.model} on {engine.backend}/{engine.device} ({engine.precision})",
+                _ACCENT,
+            ),
         ]
         if detection is None:
             rows.append(("objects", "waiting for first pass", _DIM))
@@ -160,7 +186,9 @@ class HudRenderer:
         summary = ", ".join(
             f"{count}x {label}" for label, count in sorted(detection.counts().items())
         )
-        rows.append(("objects", f"{len(detection)}  {summary}" if summary else "0  none", _WHITE))
+        rows.append(
+            ("objects", f"{len(detection)}  {summary}" if summary else "0  none", _WHITE)
+        )
 
         # Inference time governs the maximum sustainable detection rate, so it
         # is coloured against that budget rather than an arbitrary threshold.
@@ -177,8 +205,31 @@ class HudRenderer:
         rows.append(("det rate", f"max {1000.0 / total:.1f} fps" if total > 0 else "n/a", _DIM))
         return rows
 
+    def _compose_health(
+        self, stages: StageRegistry
+    ) -> list[tuple[str, str, tuple[int, int, int]]]:
+        """Failing stages, and nothing at all when everything is fine.
+
+        A permanent "all healthy" row would be one more line to scan past on
+        every frame; the absence of this row is the healthy signal. When a stage
+        *is* failing, it is the most important thing on the panel.
+        """
+        rows: list[tuple[str, str, tuple[int, int, int]]] = []
+        for stats in stages.degraded:
+            if stats.disabled:
+                rows.append((stats.name, "DISABLED after repeated failures", _BAD))
+            else:
+                rows.append(
+                    (
+                        stats.name,
+                        f"{stats.failures}/{stats.calls} failed ({stats.failure_rate:.0%})",
+                        _WARN,
+                    )
+                )
+        return rows
+
     def _compose_spatial(
-        self, spatial: "SpatialResult"
+        self, spatial: SpatialResult
     ) -> list[tuple[str, str, tuple[int, int, int]]]:
         """Zone occupancy, boundary crossings and the notable relations."""
         rows: list[tuple[str, str, tuple[int, int, int]]] = []
@@ -206,21 +257,18 @@ class HudRenderer:
         # Without motion state, interaction is only claimed on a confirmed
         # reach. That materially changes what the line above can mean, so it is
         # said rather than left for someone to infer from missing rows.
-        if spatial.zones_defined or counts:
-            if not spatial.state_available:
-                rows.append(("note", "no motion state: reach-confirmed only", _DIM))
+        if (spatial.zones_defined or counts) and not spatial.state_available:
+            rows.append(("note", "no motion state: reach-confirmed only", _DIM))
         return rows
 
     def _compose_activity(
-        self, activity: "ActivityResult"
+        self, activity: ActivityResult
     ) -> list[tuple[str, str, tuple[int, int, int]]]:
         """What entities are doing, with transient events called out."""
         if not activity.entities:
             return []
 
-        counts = {
-            name: n for name, n in activity.counts().items() if name != "idle"
-        }
+        counts = {name: n for name, n in activity.counts().items() if name != "idle"}
         summary = ", ".join(f"{n} {name}" for name, n in sorted(counts.items()))
         rows = [("activity", summary or "nothing notable", _WHITE if counts else _DIM)]
 
@@ -239,9 +287,7 @@ class HudRenderer:
                 )
         return rows
 
-    def _compose_state(
-        self, state: "StateResult"
-    ) -> list[tuple[str, str, tuple[int, int, int]]]:
+    def _compose_state(self, state: StateResult) -> list[tuple[str, str, tuple[int, int, int]]]:
         """Motion state, and the longest-standing entity."""
         if not state.states:
             return []
@@ -263,9 +309,7 @@ class HudRenderer:
             )
         return rows
 
-    def _compose_pose(
-        self, pose: "PoseResult"
-    ) -> list[tuple[str, str, tuple[int, int, int]]]:
+    def _compose_pose(self, pose: PoseResult) -> list[tuple[str, str, tuple[int, int, int]]]:
         """Pose telemetry, shown only when an estimator is attached."""
         if not pose.people_seen:
             return [("pose", "no people", _DIM)]
@@ -280,7 +324,9 @@ class HudRenderer:
         if pose.skipped:
             rows.append(("skipped", f"{pose.skipped} over max_persons", _WARN))
         if len(pose):
-            rows.append(("pose ms", f"{pose.total_ms / max(1, len(pose)):.1f} per person", _DIM))
+            rows.append(
+                ("pose ms", f"{pose.total_ms / max(1, len(pose)):.1f} per person", _DIM)
+            )
 
         # Show why, when nothing could be classified. "unknown" on its own reads
         # as a fault; on a desk webcam it is the correct answer and the reason
@@ -292,7 +338,7 @@ class HudRenderer:
         return rows
 
     def _compose_tracking(
-        self, tracking: "TrackingResult", entity_total: int
+        self, tracking: TrackingResult, entity_total: int
     ) -> list[tuple[str, str, tuple[int, int, int]]]:
         """Tracking telemetry, shown only when a tracker is attached."""
         coasting = sum(1 for track in tracking.tracks if track.is_coasting)
@@ -341,7 +387,9 @@ class HudRenderer:
         width = int(430 * scale)
         height = pad * 2 + line_h * len(rows)
 
-        overlay_region = canvas[0 : min(height, canvas.shape[0]), 0 : min(width, canvas.shape[1])]
+        overlay_region = canvas[
+            0 : min(height, canvas.shape[0]), 0 : min(width, canvas.shape[1])
+        ]
         darkened = (overlay_region.astype(np.float32) * 0.25).astype(np.uint8)
         overlay_region[:] = darkened
         cv2.rectangle(
@@ -381,7 +429,9 @@ class HudRenderer:
             px = x0 + int(i / max(1, count - 1) * (box_w - 2)) + 1
             py = y0 + box_h - 1 - int(min(value / peak, 1.0) * (box_h - 2))
             points.append((px, py))
-        cv2.polylines(canvas, [np.array(points, dtype=np.int32)], False, _ACCENT, 1, cv2.LINE_AA)
+        cv2.polylines(
+            canvas, [np.array(points, dtype=np.int32)], False, _ACCENT, 1, cv2.LINE_AA
+        )
         cv2.putText(
             canvas,
             f"fps 0-{peak:.0f}",

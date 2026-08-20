@@ -53,7 +53,9 @@ def linear_sum_assignment(cost: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     if matrix.size == 0:
         return np.empty(0, dtype=np.int64), np.empty(0, dtype=np.int64)
     if not np.isfinite(matrix).all():
-        raise ValueError("cost matrix contains non-finite values; use a large finite cost instead")
+        raise ValueError(
+            "cost matrix contains non-finite values; use a large finite cost instead"
+        )
 
     # The solver requires rows <= cols; transposing is cheaper than a second
     # implementation, and the pairs are symmetric so only the labels swap.
@@ -161,7 +163,7 @@ def match(
     pairs: list[tuple[int, int]] = []
     matched_rows: set[int] = set()
     matched_cols: set[int] = set()
-    for row, col in zip(rows.tolist(), cols.tolist()):
+    for row, col in zip(rows.tolist(), cols.tolist(), strict=False):
         if matrix[row, col] <= max_cost:
             pairs.append((row, col))
             matched_rows.add(row)

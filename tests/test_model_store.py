@@ -36,23 +36,23 @@ def build_archive(directory: Path, member: str = MEMBER, payload: bytes = PAYLOA
 
 
 def archived_spec(archive: Path, **overrides) -> ModelSpec:
-    defaults = dict(
-        key="fake-pose",
-        filename="fake_pose.onnx",
-        url=archive.as_uri(),
-        sha256=hashlib.sha256(PAYLOAD).hexdigest(),
-        size_bytes=len(PAYLOAD),
-        archive_member=MEMBER,
-        archive_sha256=sha256_of(archive),
-        archive_size_bytes=archive.stat().st_size,
-        adapter="rtmpose",
-        input_size=(256, 192),
-        label_set="coco-keypoints",
-        license="Apache-2.0",
-        source="https://example.invalid",
-        description="test fixture",
-        task="pose",
-    )
+    defaults = {
+        "key": "fake-pose",
+        "filename": "fake_pose.onnx",
+        "url": archive.as_uri(),
+        "sha256": hashlib.sha256(PAYLOAD).hexdigest(),
+        "size_bytes": len(PAYLOAD),
+        "archive_member": MEMBER,
+        "archive_sha256": sha256_of(archive),
+        "archive_size_bytes": archive.stat().st_size,
+        "adapter": "rtmpose",
+        "input_size": (256, 192),
+        "label_set": "coco-keypoints",
+        "license": "Apache-2.0",
+        "source": "https://example.invalid",
+        "description": "test fixture",
+        "task": "pose",
+    }
     defaults.update(overrides)
     return ModelSpec(**defaults)
 
@@ -86,7 +86,7 @@ class TestArchiveInstall:
         path = store.ensure(spec)
 
         path.write_bytes(b"corrupted on disk")
-        with pytest.raises(VantageError, match="integrity verification"):
+        with pytest.raises(VantageError, match=r"integrity verification"):
             store.ensure(spec)
 
     def test_download_is_skipped_when_the_member_is_already_present(
@@ -106,7 +106,7 @@ class TestArchiveFailures:
         spec = archived_spec(build_archive(tmp_path), archive_sha256="00" * 32)
         store = ModelStore(tmp_path / "models")
 
-        with pytest.raises(VantageError, match="pinned checksum"):
+        with pytest.raises(VantageError, match=r"pinned checksum"):
             store.ensure(spec)
         assert not store.path_for(spec).exists()
         assert not list((tmp_path / "models").glob("*.partial"))
@@ -116,7 +116,7 @@ class TestArchiveFailures:
         spec = archived_spec(build_archive(tmp_path), sha256="11" * 32)
         store = ModelStore(tmp_path / "models")
 
-        with pytest.raises(VantageError, match="archive verified but its contents"):
+        with pytest.raises(VantageError, match=r"archive verified but its contents"):
             store.ensure(spec)
         assert not store.path_for(spec).exists()
         assert not list((tmp_path / "models").glob("*.member"))
@@ -126,7 +126,7 @@ class TestArchiveFailures:
         spec = archived_spec(build_archive(tmp_path), archive_member="bundle/moved.onnx")
         store = ModelStore(tmp_path / "models")
 
-        with pytest.raises(VantageError, match="does not contain the expected member"):
+        with pytest.raises(VantageError, match=r"does not contain the expected member"):
             store.ensure(spec)
 
     def test_a_non_zip_is_reported_as_such(self, tmp_path: Path) -> None:
@@ -139,7 +139,7 @@ class TestArchiveFailures:
         )
         store = ModelStore(tmp_path / "models")
 
-        with pytest.raises(VantageError, match="not a readable zip"):
+        with pytest.raises(VantageError, match=r"not a readable zip"):
             store.ensure(spec)
 
 
@@ -168,5 +168,5 @@ class TestPlainInstall:
     def test_download_disabled_names_the_pull_command(self, tmp_path: Path) -> None:
         spec = archived_spec(build_archive(tmp_path))
         store = ModelStore(tmp_path / "models")
-        with pytest.raises(VantageError, match="vantage models pull"):
+        with pytest.raises(VantageError, match=r"vantage models pull"):
             store.ensure(spec, allow_download=False)

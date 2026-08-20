@@ -36,7 +36,6 @@ from vantage.tracking.scenarios import (
     sparse_scenario,
 )
 
-
 # -- helpers ------------------------------------------------------------
 
 
@@ -114,7 +113,7 @@ class TestAssignment:
 
     def test_non_finite_costs_are_rejected(self) -> None:
         """An accidental inf must fail loudly, not produce a plausible answer."""
-        with pytest.raises(ValueError, match="non-finite"):
+        with pytest.raises(ValueError, match=r"non-finite"):
             linear_sum_assignment(np.array([[1.0, np.inf], [2.0, 3.0]]))
 
     def test_match_splits_gated_pairs_into_unmatched(self) -> None:
@@ -220,7 +219,7 @@ class TestKalmanFilter:
         assert result_box.y2 >= result_box.y1
 
     def test_noise_must_be_positive(self) -> None:
-        with pytest.raises(ValueError, match="acceleration"):
+        with pytest.raises(ValueError, match=r"acceleration"):
             MotionNoise(acceleration=0.0)
 
 
@@ -238,8 +237,7 @@ class TestTrackerLifecycle:
         for min_hits in (1, 2, 3, 4):
             tracker = ByteTracker(TrackerParams(min_hits=min_hits))
             published = [
-                len(tracker.update(result([detection(100, 300)], index)))
-                for index in range(6)
+                len(tracker.update(result([detection(100, 300)], index))) for index in range(6)
             ]
             assert published.index(1) == min_hits - 1, f"min_hits={min_hits}: {published}"
 
@@ -284,11 +282,15 @@ class TestTrackerLifecycle:
         for fps in (30.0, 10.0):
             tracker = ByteTracker(TrackerParams(max_lost_s=1.0))
             for index in range(6):
-                tracker.update(result([detection(100, 300)], index), frame=frame_at(index, index / fps))
+                tracker.update(
+                    result([detection(100, 300)], index), frame=frame_at(index, index / fps)
+                )
             steps = 0
             while tracker.stats()["active"]:
                 steps += 1
-                tracker.update(result([], 6 + steps), frame=frame_at(6 + steps, (6 + steps) / fps))
+                tracker.update(
+                    result([], 6 + steps), frame=frame_at(6 + steps, (6 + steps) / fps)
+                )
                 assert steps < 200, "track never expired"
             counts[fps] = steps / fps  # elapsed seconds, not frames
         assert counts[30.0] == pytest.approx(counts[10.0], abs=0.2)
@@ -358,7 +360,9 @@ class TestAssociation:
             established.update(result([detection(100, 300, confidence=0.9)], index))
         sustained = established.update(result([detection(105, 300, confidence=0.3)], 6))
         assert len(sustained) == 1
-        assert not sustained.tracks[0].is_coasting, "a weak box should confirm an existing track"
+        assert not sustained.tracks[0].is_coasting, (
+            "a weak box should confirm an existing track"
+        )
 
     def test_boxes_below_low_threshold_are_ignored_entirely(self) -> None:
         tracker = ByteTracker(TrackerParams(low_threshold=0.2))
@@ -412,9 +416,10 @@ class TestAssociation:
         tracker = ByteTracker()
         for index in range(8):
             tracker.update(result([detection(300, 300), detection(380, 300)], index))
-        before = {round(t.center[0]): t.entity_id for t in tracker.update(
-            result([detection(300, 300), detection(380, 300)], 8)
-        )}
+        before = {
+            round(t.center[0]): t.entity_id
+            for t in tracker.update(result([detection(300, 300), detection(380, 300)], 8))
+        }
         after = tracker.update(result([detection(310, 300), detection(390, 300)], 9))
         mapping = {round(t.center[0] / 10) * 10: t.entity_id for t in after}
         assert len(set(mapping.values())) == 2
@@ -427,7 +432,9 @@ class TestTimestepHandling:
         """A file analysed at 10x speed must still model real object motion."""
         tracker = ByteTracker()
         for index in range(5):
-            tracker.update(result([detection(100, 300)], index), frame=frame_at(index, index / 30))
+            tracker.update(
+                result([detection(100, 300)], index), frame=frame_at(index, index / 30)
+            )
         assert tracker.update(
             result([detection(100, 300)], 5), frame=frame_at(5, 5 / 30)
         ).elapsed_s == pytest.approx(1 / 30, abs=1e-6)
@@ -436,7 +443,9 @@ class TestTimestepHandling:
         """A resume-from-sleep must not throw every prediction off the frame."""
         tracker = ByteTracker(TrackerParams(max_step_s=2.0))
         for index in range(5):
-            tracker.update(result([detection(100, 300)], index), frame=frame_at(index, index / 30))
+            tracker.update(
+                result([detection(100, 300)], index), frame=frame_at(index, index / 30)
+            )
         stepped = tracker.update(result([detection(100, 300)], 5), frame=frame_at(5, 3600.0))
         assert stepped.elapsed_s == pytest.approx(2.0)
         assert tracker.stats()["clamped_steps"] == 1
@@ -445,7 +454,9 @@ class TestTimestepHandling:
         """A looping source resets its media clock; that is not an error."""
         tracker = ByteTracker()
         for index in range(5):
-            tracker.update(result([detection(100, 300)], index), frame=frame_at(index, index / 30))
+            tracker.update(
+                result([detection(100, 300)], index), frame=frame_at(index, index / 30)
+            )
         stepped = tracker.update(result([detection(100, 300)], 0), frame=frame_at(0, 0.0))
         assert stepped.elapsed_s > 0
         assert tracker.stats()["clamped_steps"] == 1
@@ -475,7 +486,9 @@ class TestContracts:
         tracker.update(result([detection(100, 300, class_id=7, label="truck")], 0))
         tracker.update(result([detection(100, 300, class_id=0, label="person")], 1))
         tracker.update(result([detection(100, 300, class_id=0, label="person")], 2))
-        track = tracker.update(result([detection(100, 300, class_id=0, label="person")], 3)).tracks[0]
+        track = tracker.update(
+            result([detection(100, 300, class_id=0, label="person")], 3)
+        ).tracks[0]
         assert track.label == "person"
         assert track.entity_id.startswith("person_")
 
@@ -495,10 +508,22 @@ class TestContracts:
         tracker = ByteTracker()
         for index in range(6):
             tracker.update(
-                result([detection(100, 300, label="person"), detection(900, 300, label="car", class_id=2)], index)
+                result(
+                    [
+                        detection(100, 300, label="person"),
+                        detection(900, 300, label="car", class_id=2),
+                    ],
+                    index,
+                )
             )
         tracked = tracker.update(
-            result([detection(100, 300, label="person"), detection(900, 300, label="car", class_id=2)], 6)
+            result(
+                [
+                    detection(100, 300, label="person"),
+                    detection(900, 300, label="car", class_id=2),
+                ],
+                6,
+            )
         )
         assert tracked.counts() == {"person": 1, "car": 1}
         assert len(tracked.of_class("person")) == 1
@@ -509,7 +534,8 @@ class TestContracts:
         tracker = ByteTracker()
         for index in range(30):
             tracker.update(
-                result([detection(100 + 10 * index, 300)], index), frame=frame_at(index, index / 30)
+                result([detection(100 + 10 * index, 300)], index),
+                frame=frame_at(index, index / 30),
             )
         track = tracker.update(
             result([detection(400, 300)], 30), frame=frame_at(30, 1.0)
@@ -519,15 +545,15 @@ class TestContracts:
 
 class TestParams:
     def test_thresholds_must_be_ordered(self) -> None:
-        with pytest.raises(ConfigError, match="low_threshold must be below"):
+        with pytest.raises(ConfigError, match=r"low_threshold must be below"):
             TrackerParams(low_threshold=0.7, high_threshold=0.5)
 
     def test_init_threshold_cannot_undercut_high_threshold(self) -> None:
-        with pytest.raises(ConfigError, match="init_threshold"):
+        with pytest.raises(ConfigError, match=r"init_threshold"):
             TrackerParams(high_threshold=0.6, init_threshold=0.4)
 
     def test_min_hits_must_be_at_least_one(self) -> None:
-        with pytest.raises(ConfigError, match="min_hits"):
+        with pytest.raises(ConfigError, match=r"min_hits"):
             TrackerParams(min_hits=0)
 
 
@@ -562,14 +588,14 @@ class TestScenarios:
         profile = DetectorProfile(seed=11, miss_rate=0.0, confidence_noise=0.0)
         results = simulate_detections(scenario, profile)
         low = []
-        for frame, detected in zip(scenario.frames, results):
+        for frame, detected in zip(scenario.frames, results, strict=False):
             subject = [o for o in frame.objects if o.object_id == 0]
             if subject and 0.2 < subject[0].visibility < 0.8 and detected.detections:
                 low.append(min(d.confidence for d in detected.detections))
         assert low and min(low) < 0.5
 
     def test_build_suite_rejects_unknown_names(self) -> None:
-        with pytest.raises(ValueError, match="unknown scenario"):
+        with pytest.raises(ValueError, match=r"unknown scenario"):
             build_suite(["nope"])
 
     def test_all_scenarios_construct(self) -> None:
@@ -587,9 +613,7 @@ class TestEvaluation:
         scenario = sparse_scenario(40)
         results = []
         for frame in scenario.frames:
-            tracks = tuple(
-                _fake_track(obj.object_id, obj.box) for obj in frame.objects
-            )
+            tracks = tuple(_fake_track(obj.object_id, obj.box) for obj in frame.objects)
             results.append(
                 TrackingResult(
                     tracks=tracks,
@@ -652,7 +676,7 @@ class TestEvaluation:
     def test_result_count_must_match_frame_count(self) -> None:
         from vantage.tracking.evaluation import evaluate
 
-        with pytest.raises(ValueError, match="one result per frame"):
+        with pytest.raises(ValueError, match=r"one result per frame"):
             evaluate(sparse_scenario(10), [])
 
     def test_tracker_beats_a_low_bar_on_every_scenario(self) -> None:
@@ -695,7 +719,7 @@ class TestTuning:
         base = TrackerParams()
         for name, values in SEARCH_SPACE:
             for value in values:
-                try:
+                try:  # noqa: SIM105 - see the comment on the pass
                     _with(base, name, value)
                 except ConfigError:
                     pass  # a genuinely invalid combination, rejected by design

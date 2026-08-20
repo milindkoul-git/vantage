@@ -9,6 +9,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
+from tests.fakes import make_engine
 from vantage.app import run_ingestion
 from vantage.cli import main
 from vantage.config.loader import load_config
@@ -23,8 +24,6 @@ from vantage.config.schema import (
 from vantage.core.errors import ConfigError
 from vantage.perception.contracts import BoundingBox, Detection, DetectionResult
 from vantage.viz.overlay import class_color, draw_detections
-
-from tests.fakes import make_engine
 
 
 def config_for(**detection_kwargs) -> VantageConfig:
@@ -51,11 +50,11 @@ class TestDetectionConfig:
 
     def test_classes_rejects_a_bare_string(self) -> None:
         """Otherwise a string would be iterated character by character."""
-        with pytest.raises(ConfigError, match="expected a list"):
+        with pytest.raises(ConfigError, match=r"expected a list"):
             load_config(None, ["detection.classes=person"])
 
     def test_empty_class_list_is_rejected(self) -> None:
-        with pytest.raises(ConfigError, match="empty list"):
+        with pytest.raises(ConfigError, match=r"empty list"):
             load_config(None, ["detection.classes=[]"])
 
     @pytest.mark.parametrize(
@@ -78,7 +77,7 @@ class TestDetectionConfig:
     def test_unknown_model_suggests_a_near_miss(self) -> None:
         from vantage.perception.catalog import get_model_spec
 
-        with pytest.raises(ConfigError, match="did you mean 'yolox-nano'"):
+        with pytest.raises(ConfigError, match=r"did you mean 'yolox-nano'"):
             get_model_spec("yolox-nanoo")
 
 

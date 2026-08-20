@@ -20,8 +20,8 @@ on the HUD instead of being quietly dropped.
 from __future__ import annotations
 
 import time
+from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Sequence
 
 import numpy as np
 
@@ -75,8 +75,7 @@ class PoseEngine:
     ) -> None:
         if not 0.0 <= min_keypoint_confidence < 1.0:
             raise ConfigError(
-                f"pose.min_keypoint_confidence must be in [0, 1), got "
-                f"{min_keypoint_confidence}"
+                f"pose.min_keypoint_confidence must be in [0, 1), got {min_keypoint_confidence}"
             )
         if max_persons < 1:
             raise ConfigError(f"pose.max_persons must be >= 1, got {max_persons}")
@@ -247,7 +246,7 @@ class PoseEngine:
             self._backend.close()
             self._closed = True
 
-    def __enter__(self) -> "PoseEngine":
+    def __enter__(self) -> PoseEngine:
         return self
 
     def __exit__(self, *_exc: object) -> None:

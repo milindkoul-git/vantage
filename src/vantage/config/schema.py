@@ -62,7 +62,9 @@ class ReconnectConfig:
 
     def __post_init__(self) -> None:
         if self.max_attempts < 0:
-            raise ConfigError("source.reconnect.max_attempts must be >= 0 (0 disables retrying)")
+            raise ConfigError(
+                "source.reconnect.max_attempts must be >= 0 (0 disables retrying)"
+            )
         if self.initial_delay_s < 0 or self.max_delay_s < 0:
             raise ConfigError("source.reconnect delays must be >= 0")
         if self.max_delay_s < self.initial_delay_s:
@@ -121,15 +123,21 @@ class SourceConfig:
 
     def __post_init__(self) -> None:
         if not self.uri or not self.uri.strip():
-            raise ConfigError("source.uri must not be empty (e.g. 'webcam:0' or 'synthetic://')")
+            raise ConfigError(
+                "source.uri must not be empty (e.g. 'webcam:0' or 'synthetic://')"
+            )
         for name in ("width", "height"):
             value = getattr(self, name)
             if value is not None and value <= 0:
-                raise ConfigError(f"source.{name} must be a positive integer or null, got {value}")
+                raise ConfigError(
+                    f"source.{name} must be a positive integer or null, got {value}"
+                )
         if self.fps is not None and self.fps <= 0:
             raise ConfigError(f"source.fps must be positive or null, got {self.fps}")
         if self.fourcc is not None and len(self.fourcc) != 4:
-            raise ConfigError(f"source.fourcc must be exactly 4 characters, got {self.fourcc!r}")
+            raise ConfigError(
+                f"source.fourcc must be exactly 4 characters, got {self.fourcc!r}"
+            )
         if self.read_retries < 0:
             raise ConfigError("source.read_retries must be >= 0")
 
@@ -644,6 +652,20 @@ class AppConfig:
     log_level: str = "INFO"
     log_format: str = "console"
     stats_interval_s: float = 5.0
+
+    stage_failure_budget: int = 5
+    """Consecutive failures before an analysis stage is disabled for the run.
+
+    A stage that throws on one frame has met a bad frame; a stage that throws on
+    five in a row is broken, and continuing to call it costs latency on every
+    frame and floods the log. Set higher for a flaky source you would rather
+    limp along with, lower to fail fast."""
+
+    resource_interval_s: float = 10.0
+    """How often to sample process CPU and memory. Zero disables it.
+
+    Cheap - two syscalls - but there is no reason to do it per frame, and the
+    number it exists to reveal is a leak measured over hours."""
     """How often a metrics summary is logged. ``0`` disables periodic summaries."""
 
     def __post_init__(self) -> None:
@@ -653,9 +675,18 @@ class AppConfig:
                 f"app.log_level must be one of {sorted(valid_levels)}, got {self.log_level!r}"
             )
         if self.log_format not in {"console", "json"}:
-            raise ConfigError(f"app.log_format must be 'console' or 'json', got {self.log_format!r}")
+            raise ConfigError(
+                f"app.log_format must be 'console' or 'json', got {self.log_format!r}"
+            )
         if self.stats_interval_s < 0:
             raise ConfigError("app.stats_interval_s must be >= 0 (0 disables)")
+        if self.stage_failure_budget < 1:
+            raise ConfigError(
+                "app.stage_failure_budget must be >= 1: a budget of 0 would disable "
+                "every stage on its first bad frame"
+            )
+        if self.resource_interval_s < 0:
+            raise ConfigError("app.resource_interval_s must be >= 0 (0 disables)")
 
 
 @dataclass(frozen=True, slots=True)

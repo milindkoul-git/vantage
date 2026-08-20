@@ -57,19 +57,19 @@ class TestFileLoading:
         assert load_config(path, []).ingest.queue_size == 8
 
     def test_missing_explicit_file_is_an_error(self, tmp_path: Path) -> None:
-        with pytest.raises(ConfigError, match="not found"):
+        with pytest.raises(ConfigError, match=r"not found"):
             load_config(tmp_path / "nope.yaml", [])
 
     def test_malformed_yaml_is_reported_with_the_path(self, tmp_path: Path) -> None:
         path = tmp_path / "bad.yaml"
         path.write_text("app: [unclosed\n", encoding="utf-8")
-        with pytest.raises(ConfigError, match="invalid YAML"):
+        with pytest.raises(ConfigError, match=r"invalid YAML"):
             load_config(path, [])
 
     def test_non_mapping_top_level_is_rejected(self, tmp_path: Path) -> None:
         path = tmp_path / "list.yaml"
         path.write_text("- one\n- two\n", encoding="utf-8")
-        with pytest.raises(ConfigError, match="must be a mapping"):
+        with pytest.raises(ConfigError, match=r"must be a mapping"):
             load_config(path, [])
 
 
@@ -97,25 +97,25 @@ class TestOverrides:
         assert config.source.uri == "webcam:0"
 
     def test_malformed_override_is_rejected(self) -> None:
-        with pytest.raises(ConfigError, match="dotted.key=value"):
+        with pytest.raises(ConfigError, match=r"dotted.key=value"):
             load_config(None, ["nonsense"])
 
 
 class TestStrictness:
     def test_unknown_key_is_an_error_not_a_silent_no_op(self) -> None:
-        with pytest.raises(ConfigError, match="unknown configuration key"):
+        with pytest.raises(ConfigError, match=r"unknown configuration key"):
             load_config(None, ["ingest.queue_sizes=4"])
 
     def test_a_near_miss_gets_a_suggestion(self) -> None:
-        with pytest.raises(ConfigError, match="did you mean 'target_fps'"):
+        with pytest.raises(ConfigError, match=r"did you mean 'target_fps'"):
             load_config(None, ["ingest.targt_fps=10"])
 
     def test_wrong_type_is_reported_with_the_path(self) -> None:
-        with pytest.raises(ConfigError, match="ingest.queue_size"):
+        with pytest.raises(ConfigError, match=r"ingest.queue_size"):
             load_config(None, ["ingest.queue_size=lots"])
 
     def test_enum_values_are_validated(self) -> None:
-        with pytest.raises(ConfigError, match="expected one of"):
+        with pytest.raises(ConfigError, match=r"expected one of"):
             load_config(None, ["ingest.backpressure=whenever"])
 
     @pytest.mark.parametrize(
@@ -152,11 +152,13 @@ class TestUriParsing:
         assert parsed.default_id() == "cam0"
 
     def test_camera_index_must_be_numeric(self) -> None:
-        with pytest.raises(ConfigError, match="numeric device index"):
+        with pytest.raises(ConfigError, match=r"numeric device index"):
             parse_uri("webcam:front")
 
     def test_synthetic_query_parameters(self) -> None:
-        parsed = parse_uri("synthetic://?width=640&height=480&fps=15&frames=10&seed=3&objects=2")
+        parsed = parse_uri(
+            "synthetic://?width=640&height=480&fps=15&frames=10&seed=3&objects=2"
+        )
         assert parsed.kind is SourceKind.SYNTHETIC
         assert parsed.int_param("width", None) == 640
         assert parsed.float_param("fps", None) == pytest.approx(15.0)
@@ -169,7 +171,7 @@ class TestUriParsing:
 
     def test_bad_synthetic_parameter_is_reported(self) -> None:
         parsed = parse_uri("synthetic://?width=wide")
-        with pytest.raises(ConfigError, match="must be an integer"):
+        with pytest.raises(ConfigError, match=r"must be an integer"):
             parsed.int_param("width", None)
 
     def test_explicit_file_scheme(self, tmp_path: Path) -> None:
@@ -193,7 +195,9 @@ class TestUriParsing:
     def test_media_filename_that_does_not_exist_yet_is_still_a_file(self) -> None:
         assert parse_uri("recordings/does-not-exist.mp4").kind is SourceKind.FILE
 
-    @pytest.mark.parametrize("uri", ["rtsp://host/stream", "http://host/feed.mjpg", "udp://1.2.3.4:5"])
+    @pytest.mark.parametrize(
+        "uri", ["rtsp://host/stream", "http://host/feed.mjpg", "udp://1.2.3.4:5"]
+    )
     def test_stream_schemes(self, uri: str) -> None:
         assert parse_uri(uri).kind is SourceKind.STREAM
 
@@ -255,5 +259,5 @@ class TestBackendResolution:
     def test_unknown_backend_lists_the_valid_options(self) -> None:
         from vantage.core.errors import SourceOpenError
 
-        with pytest.raises(SourceOpenError, match="valid options"):
+        with pytest.raises(SourceOpenError, match=r"valid options"):
             resolve_backend("directdraw", SourceKind.CAMERA)

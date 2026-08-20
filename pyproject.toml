@@ -34,6 +34,7 @@ discover = [
 ]
 dev = [
     "pytest>=8.0",
+    "ruff>=0.6",   # lint and format; CI gates on both
 ]
 
 [project.scripts]
@@ -42,10 +43,54 @@ vantage = "vantage.cli:main"
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.ruff]
+line-length = 96
+target-version = "py311"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+# Deliberately not "everything". Each family here catches a class of bug this
+# codebase can actually have; the ones left out (docstring style, annotation
+# completeness) would generate noise against a codebase whose docstrings are
+# prose rather than a template.
+select = [
+    "E", "W",    # pycodestyle
+    "F",         # pyflakes: undefined names, unused imports
+    "I",         # import ordering
+    "B",         # bugbear: mutable defaults, loop-variable capture
+    "C4",        # comprehension rewrites
+    "UP",        # outdated syntax for the target version
+    "SIM",       # simplifiable branches
+    "RUF",       # ruff's own checks
+]
+ignore = [
+    "E501",      # line length is enforced by the formatter, not the linter
+    "B008",      # call-in-default is how dataclass field(default_factory=) reads
+    "SIM108",    # a ternary is not always clearer than an if/else
+    # int(round(x)) is redundant for a Python float and this codebase mixes
+    # numpy scalars with Python ones. round() on a numpy scalar has returned
+    # different types across numpy versions, so the cast is deliberate
+    # insurance that costs nothing; churning 22 call sites to remove it would
+    # trade a portability guarantee for tidiness.
+    "RUF046",
+    # (str, Enum) rather than StrEnum. They are not equivalent: str(Member) is
+    # "Class.MEMBER" for the former and the value for the latter, so switching
+    # would silently change every f-string that interpolates an enum. The
+    # codebase uses .value explicitly, but "probably no call site relies on it"
+    # is not a good enough reason to change formatting behaviour repo-wide.
+    "UP042",
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests reach into private members on purpose, to assert that pruning actually
+# happened rather than that a public count looks right.
+"tests/*" = ["SLF001"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"
 markers = [
     "hardware: tests that require a physical camera (deselected by default)",
     "model: tests that require downloaded weights and an inference runtime",
+    "slow: soak and endurance tests, run with -m slow",
 ]

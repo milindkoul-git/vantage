@@ -112,11 +112,11 @@ class TestNullSink:
 
 class TestRunIngestion:
     def config(self, **overrides) -> VantageConfig:
-        base = dict(
-            source=SourceConfig(uri="synthetic://?width=160&height=120&fps=30&frames=12"),
-            ingest=IngestConfig(mode=IngestMode.INLINE),
-            display=DisplayConfig(enabled=False),
-        )
+        base = {
+            "source": SourceConfig(uri="synthetic://?width=160&height=120&fps=30&frames=12"),
+            "ingest": IngestConfig(mode=IngestMode.INLINE),
+            "display": DisplayConfig(enabled=False),
+        }
         base.update(overrides)
         return VantageConfig(**base)
 
@@ -150,7 +150,9 @@ class TestRunIngestion:
             def is_closed(self) -> bool:
                 return len(self.images) >= 2
 
-        result = run_ingestion(self.config(display=DisplayConfig(enabled=True)), sink=ClosingSink())
+        result = run_ingestion(
+            self.config(display=DisplayConfig(enabled=True)), sink=ClosingSink()
+        )
         assert result.reason == "window closed"
 
     def test_hud_toggle_changes_what_is_drawn(self) -> None:
@@ -221,7 +223,9 @@ class TestShutdownController:
 
 class TestCli:
     def test_run_is_the_default_command(self, capsys: pytest.CaptureFixture) -> None:
-        code = main(["--no-display", "--frames", "5", "--source", "synthetic://?width=64&height=48"])
+        code = main(
+            ["--no-display", "--frames", "5", "--source", "synthetic://?width=64&height=48"]
+        )
         assert code == 0
         assert "5 frames" in capsys.readouterr().out
 
@@ -231,7 +235,17 @@ class TestCli:
 
     def test_flags_lower_onto_config_overrides(self, capsys: pytest.CaptureFixture) -> None:
         code = main(
-            ["run", "--no-display", "--frames", "4", "--stride", "2", "--mode", "inline", "--json"]
+            [
+                "run",
+                "--no-display",
+                "--frames",
+                "4",
+                "--stride",
+                "2",
+                "--mode",
+                "inline",
+                "--json",
+            ]
         )
         assert code == 0
         payload = json.loads(capsys.readouterr().out)

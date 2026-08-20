@@ -83,8 +83,10 @@ class RateMeter:
             if dt <= 0:
                 return
             per_event = dt / max(1, amount)
-            self._interval = per_event if self._interval is None else (
-                self._alpha * per_event + (1.0 - self._alpha) * self._interval
+            self._interval = (
+                per_event
+                if self._interval is None
+                else (self._alpha * per_event + (1.0 - self._alpha) * self._interval)
             )
 
     @property
@@ -192,7 +194,7 @@ class MetricsRegistry:
     _counters: dict[str, Counter] = field(default_factory=dict, init=False, repr=False)
     _rates: dict[str, RateMeter] = field(default_factory=dict, init=False, repr=False)
     _latencies: dict[str, LatencyTracker] = field(default_factory=dict, init=False, repr=False)
-    _children: dict[str, "MetricsRegistry"] = field(default_factory=dict, init=False, repr=False)
+    _children: dict[str, MetricsRegistry] = field(default_factory=dict, init=False, repr=False)
 
     def counter(self, name: str) -> Counter:
         return self._counters.setdefault(name, Counter())
@@ -207,7 +209,7 @@ class MetricsRegistry:
             self._latencies[name] = LatencyTracker(window=window)
         return self._latencies[name]
 
-    def child(self, name: str) -> "MetricsRegistry":
+    def child(self, name: str) -> MetricsRegistry:
         if name not in self._children:
             self._children[name] = MetricsRegistry(name=name)
         return self._children[name]

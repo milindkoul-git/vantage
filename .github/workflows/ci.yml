@@ -1,0 +1,90 @@
+# Continuous integration.
+#
+# Three things run here, and the third is the one that makes this project's
+# testing unusual: as well as unit tests, the ground-truth harnesses for
+# tracking, activity and spatial reasoning are executed as build gates. Each
+# already exits non-zero when a scenario regresses, so a change that quietly
+# makes the tracker worse - or makes a fall detector fire when someone lies
+# down deliberately - fails the build rather than being noticed months later.
+#
+# No model weights are downloaded. The ~19 tests that need real ONNX files
+# deselect themselves, so CI stays fast and needs no network beyond pip.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  # A new push supersedes an in-flight run of the same branch.
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: tests (${{ matrix.os }}, py${{ matrix.python }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # Linux and Windows because the platform-specific code paths differ:
+        # memory reporting uses /proc on one and psapi on the other, and camera
+        # backends differ entirely. macOS is omitted only because no part of the
+        # codebase has a macOS-specific branch that Linux does not also exercise.
+        os: [ubuntu-latest, windows-latest]
+        python: ["3.11", "3.13"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Lint
+        run: |
+          pip install ruff
+          ruff check src tests
+          ruff format --check src tests
+
+      - name: Tests
+        # Weight-dependent tests deselect themselves; -m selects the rest
+        # explicitly so a missing marker cannot silently skip the suite.
+        run: pytest -m "not model and not hardware" -q
+
+      - name: Tracking accuracy gate
+        run: vantage track eval
+
+      - name: Activity recognition gate
+        run: vantage activity eval
+
+      - name: Spatial reasoning gate
+        run: vantage spatial eval
+
+  soak:
+    name: memory soak
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+      - name: Soak
+        # Two thousand frames through the full analysis chain, asserting that
+        # resident memory does not grow without bound. The characteristic
+        # failure of a long-running vision process is a slow leak, and it is
+        # invisible in a frame rate until the machine starts swapping.
+        run: pytest -m slow -q

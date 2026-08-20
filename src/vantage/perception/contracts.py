@@ -24,8 +24,8 @@ No identity
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from dataclasses import dataclass, field
-from typing import Iterator
 
 
 @dataclass(frozen=True, slots=True)
@@ -79,9 +79,14 @@ class BoundingBox:
 
     def to_int(self) -> tuple[int, int, int, int]:
         """Rounded ``(x1, y1, x2, y2)``, for drawing and cropping."""
-        return int(round(self.x1)), int(round(self.y1)), int(round(self.x2)), int(round(self.y2))
+        return (
+            int(round(self.x1)),
+            int(round(self.y1)),
+            int(round(self.x2)),
+            int(round(self.y2)),
+        )
 
-    def clipped(self, width: int, height: int) -> "BoundingBox":
+    def clipped(self, width: int, height: int) -> BoundingBox:
         """Clamp to a frame of ``width`` x ``height``.
 
         Detectors routinely predict boxes that run past the frame edge for
@@ -95,7 +100,7 @@ class BoundingBox:
             y2=min(max(self.y2, 0.0), float(height)),
         )
 
-    def iou(self, other: "BoundingBox") -> float:
+    def iou(self, other: BoundingBox) -> float:
         """Intersection over union with ``other``; ``0.0`` when disjoint."""
         ix1 = max(self.x1, other.x1)
         iy1 = max(self.y1, other.y1)
@@ -174,7 +179,9 @@ class DetectionResult:
     def describe(self) -> str:
         if not self.detections:
             return f"{self.source_id}#{self.frame_index}: nothing detected"
-        summary = ", ".join(f"{count}x {label}" for label, count in sorted(self.counts().items()))
+        summary = ", ".join(
+            f"{count}x {label}" for label, count in sorted(self.counts().items())
+        )
         return f"{self.source_id}#{self.frame_index}: {summary} ({self.total_ms:.1f} ms)"
 
 

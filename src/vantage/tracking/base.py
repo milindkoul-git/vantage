@@ -20,7 +20,8 @@ and produces tracks. It does not see pixels, which means:
 
 from __future__ import annotations
 
-from typing import Protocol, Sequence, runtime_checkable
+from collections.abc import Sequence
+from typing import Protocol, runtime_checkable
 
 from vantage.core.frame import Frame
 from vantage.perception.contracts import Detection, DetectionResult

@@ -71,7 +71,15 @@ class StateParams:
 class _EntityHistory:
     """Mutable per-entity accumulator. Never leaves this module."""
 
-    __slots__ = ("motion", "dwell_s", "age_s", "distance", "pending", "pending_s", "last_center")
+    __slots__ = (
+        "age_s",
+        "distance",
+        "dwell_s",
+        "last_center",
+        "motion",
+        "pending",
+        "pending_s",
+    )
 
     def __init__(self) -> None:
         self.motion = MotionState.UNKNOWN

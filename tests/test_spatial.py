@@ -21,15 +21,13 @@ from vantage.spatial.analyzer import SpatialAnalyzer, SpatialParams, ground_dist
 from vantage.spatial.contracts import (
     Relation,
     RelationObservation,
-    SpatialResult,
     Zone,
     ZoneEvent,
-    ZoneOccupancy,
     to_scene_record,
 )
 from vantage.spatial.engine import SpatialEngine
 from vantage.state.contracts import EntityState, MotionState, StateResult
-from vantage.tracking.contracts import Track, TrackState, TrackingResult
+from vantage.tracking.contracts import Track, TrackingResult, TrackState
 
 FRAME = (640, 480)
 DT = 1.0 / 30.0
@@ -118,7 +116,9 @@ def drive(engine: SpatialEngine, tracks, *, seconds: float, motion=None, poses=N
     result = None
     for index in range(max(1, int(seconds / DT))):
         state = (
-            state_of(*[make_state(t, motion[t.track_id]) for t in tracks if t.track_id in motion])
+            state_of(
+                *[make_state(t, motion[t.track_id]) for t in tracks if t.track_id in motion]
+            )
             if motion
             else None
         )
@@ -149,20 +149,26 @@ class TestZoneGeometry:
         zone = Zone(
             name="u",
             points=(
-                (0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.7, 1.0),
-                (0.7, 0.3), (0.3, 0.3), (0.3, 1.0), (0.0, 1.0),
+                (0.0, 0.0),
+                (1.0, 0.0),
+                (1.0, 1.0),
+                (0.7, 1.0),
+                (0.7, 0.3),
+                (0.3, 0.3),
+                (0.3, 1.0),
+                (0.0, 1.0),
             ),
         )
-        assert zone.contains((320.0, 48.0), FRAME)      # in the solid top bar
+        assert zone.contains((320.0, 48.0), FRAME)  # in the solid top bar
         assert not zone.contains((320.0, 400.0), FRAME)  # inside the notch
 
     def test_coordinates_must_be_normalised(self) -> None:
         """Pixel coordinates would silently point elsewhere at another resolution."""
-        with pytest.raises(ValueError, match="outside"):
+        with pytest.raises(ValueError, match=r"outside"):
             Zone(name="bad", points=((0.0, 0.0), (640.0, 0.0), (640.0, 480.0)))
 
     def test_a_polygon_needs_three_points(self) -> None:
-        with pytest.raises(ValueError, match="at least 3"):
+        with pytest.raises(ValueError, match=r"at least 3"):
             Zone(name="line", points=((0.0, 0.0), (1.0, 1.0)))
 
     def test_zero_sized_frame_is_not_a_crash(self) -> None:
@@ -316,7 +322,9 @@ class TestProximity:
     def test_pairing_is_capped(self) -> None:
         """Relations are quadratic, so the budget is explicit like pose's."""
         engine = SpatialEngine(SpatialAnalyzer((), SpatialParams(max_entities=3)))
-        result = engine.update(tracking_of(*[make_track(i, x=100.0 + i * 20) for i in range(8)]))
+        result = engine.update(
+            tracking_of(*[make_track(i, x=100.0 + i * 20) for i in range(8)])
+        )
         assert result.metadata["entities_paired"] == 3
         assert result.metadata["entities_total"] == 8
 
@@ -388,7 +396,10 @@ class TestInteraction:
 
         engine.reset()
         result = drive(
-            engine, [person, thing], seconds=3.0, poses=[make_pose(person, wrist=(320.0, 380.0))]
+            engine,
+            [person, thing],
+            seconds=3.0,
+            poses=[make_pose(person, wrist=(320.0, 380.0))],
         )
         assert result.of(Relation.INTERACTING)
 
@@ -461,7 +472,9 @@ class TestEngine:
         engine = SpatialEngine()
         assert not engine.update(tracking_of(make_track())).state_available
         assert engine.update(
-            tracking_of(make_track(), index=1), None, state_of(make_state(make_track(), MotionState.STATIONARY))
+            tracking_of(make_track(), index=1),
+            None,
+            state_of(make_state(make_track(), MotionState.STATIONARY)),
         ).state_available
 
     def test_reset_clears_everything(self) -> None:
@@ -478,7 +491,13 @@ class TestRecords:
 
         engine = SpatialEngine(
             SpatialAnalyzer(
-                (Zone(name="left", kind="entrance", points=((0.0, 0.0), (0.5, 0.0), (0.5, 1.0), (0.0, 1.0))),)
+                (
+                    Zone(
+                        name="left",
+                        kind="entrance",
+                        points=((0.0, 0.0), (0.5, 0.0), (0.5, 1.0), (0.0, 1.0)),
+                    ),
+                )
             )
         )
         result = engine.update(tracking_of(make_track(1, x=100.0), make_track(2, x=140.0)))
@@ -492,10 +511,8 @@ class TestRecords:
         assert record["edges"][0]["relation"] == "near"
 
     def test_relation_confidence_is_bounded(self) -> None:
-        with pytest.raises(ValueError, match="confidence"):
-            RelationObservation(
-                Relation.NEAR, "a", "b", 1, 2, 0.5, 1.5, 0.0, "x"
-            )
+        with pytest.raises(ValueError, match=r"confidence"):
+            RelationObservation(Relation.NEAR, "a", "b", 1, 2, 0.5, 1.5, 0.0, "x")
 
     def test_symmetric_key_orders_the_pair(self) -> None:
         forward = RelationObservation(Relation.NEAR, "a", "b", 1, 2, 0.5, 0.9, 0.0, "x")
@@ -510,7 +527,7 @@ class TestRecords:
 
 class TestParams:
     def test_interaction_cannot_be_looser_than_proximity(self) -> None:
-        with pytest.raises(ConfigError, match="interact_distance"):
+        with pytest.raises(ConfigError, match=r"interact_distance"):
             SpatialParams(near_distance=0.5, interact_distance=1.0)
 
     def test_negative_thresholds_are_rejected(self) -> None:
@@ -518,7 +535,7 @@ class TestParams:
             SpatialParams(near_distance=-1.0)
 
     def test_a_pair_needs_two_entities(self) -> None:
-        with pytest.raises(ConfigError, match="max_entities"):
+        with pytest.raises(ConfigError, match=r"max_entities"):
             SpatialParams(max_entities=1)
 
 
@@ -539,7 +556,7 @@ class TestConfigWiring:
         from vantage.config.schema import SpatialConfig, ZoneConfig
 
         points = [[0.0, 0.0], [0.5, 0.0], [0.5, 1.0]]
-        with pytest.raises(ConfigError, match="duplicate zone names"):
+        with pytest.raises(ConfigError, match=r"duplicate zone names"):
             SpatialConfig(
                 zones=[ZoneConfig(name="a", points=points), ZoneConfig(name="a", points=points)]
             )
@@ -547,7 +564,9 @@ class TestConfigWiring:
     def test_no_spatial_flag(self) -> None:
         from vantage.cli import _flag_overrides, build_parser
 
-        overrides = _flag_overrides(build_parser().parse_args(["run", "--track", "--no-spatial"]))
+        overrides = _flag_overrides(
+            build_parser().parse_args(["run", "--track", "--no-spatial"])
+        )
         assert "spatial.enabled=false" in overrides
 
 

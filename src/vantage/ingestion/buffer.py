@@ -47,12 +47,12 @@ class FrameBuffer:
         "_capacity",
         "_closed",
         "_dropped",
+        "_high_water",
         "_items",
+        "_lock",
         "_not_empty",
         "_not_full",
-        "_lock",
         "_policy",
-        "_high_water",
     )
 
     def __init__(self, capacity: int, policy: Backpressure) -> None:

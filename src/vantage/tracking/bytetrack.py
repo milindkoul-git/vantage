@@ -170,7 +170,9 @@ class TrackerParams:
         if self.min_hits < 1:
             raise ConfigError("min_hits must be >= 1 (1 publishes a track immediately)")
         if self.max_lost_s < 0:
-            raise ConfigError("max_lost_s must be >= 0 (0 drops a track the moment it is missed)")
+            raise ConfigError(
+                "max_lost_s must be >= 0 (0 drops a track the moment it is missed)"
+            )
         if self.max_step_s <= 0:
             raise ConfigError("max_step_s must be positive")
         if self.history < 1:
@@ -186,22 +188,22 @@ class _TrackState:
     """
 
     __slots__ = (
-        "track_id",
-        "entity_id",
-        "label",
+        "_class_votes",
+        "_filter",
+        "age",
         "class_id",
         "confidence",
-        "state",
-        "age",
+        "counted",
+        "entity_id",
+        "history",
         "hits",
-        "time_since_update",
+        "label",
+        "last_frame",
         "lost_for_s",
         "start_frame",
-        "last_frame",
-        "history",
-        "_filter",
-        "_class_votes",
-        "counted",
+        "state",
+        "time_since_update",
+        "track_id",
     )
 
     def __init__(
@@ -388,7 +390,9 @@ class ByteTracker:
             tentative, remaining_high, self.params.iou_tentative
         )
         for track_idx, det_idx in third_matched:
-            tentative[track_idx].observe(remaining_high[det_idx], result.frame_index, self.params)
+            tentative[track_idx].observe(
+                remaining_high[det_idx], result.frame_index, self.params
+            )
 
         # Counted here rather than by accumulating entity ids in the caller. A
         # set of every entity ever seen grows without bound on a camera that

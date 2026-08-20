@@ -212,9 +212,7 @@ class GroundingDinoAdapter(ModelAdapter):
         only the head noun aligns strongly.
         """
         if len(outputs) < 2:
-            raise ValueError(
-                f"Grounding DINO expects two outputs, got {len(outputs)}"
-            )
+            raise ValueError(f"Grounding DINO expects two outputs, got {len(outputs)}")
         logits, boxes = _sigmoid(outputs[0][0]), outputs[1][0]
 
         if not self._spans:

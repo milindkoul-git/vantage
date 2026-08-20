@@ -416,10 +416,10 @@ def default_params_source(params: TrackerParams) -> str:
 
 
 __all__ = [
-    "Candidate",
     "SEARCH_SPACE",
     "TRAINING_PROFILES",
     "VALIDATION_PROFILES",
+    "Candidate",
     "as_config_lines",
     "assess",
     "run_scenario",

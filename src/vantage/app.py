@@ -25,32 +25,34 @@ from vantage.core.frame import Frame
 from vantage.core.lifecycle import ShutdownController
 from vantage.core.logging import get_logger
 from vantage.core.metrics import LatencyTracker
+from vantage.core.resilience import StageRegistry
+from vantage.core.resources import ResourceSampler
 from vantage.ingestion.pipeline import IngestionPipeline, PipelineStats
 from vantage.ingestion.registry import create_source
 from vantage.tracking.factory import build_tracker
 from vantage.viz.hud import HudRenderer
 from vantage.viz.overlay import (
     draw_activities,
-    draw_relations,
-    draw_zones,
     draw_detections,
     draw_poses,
+    draw_relations,
     draw_tracks,
+    draw_zones,
 )
 from vantage.viz.window import KEY_NONE, FrameSink, NullSink, WindowSink
 
 if TYPE_CHECKING:  # detection is optional; importing it eagerly would make
     # onnxruntime/openvino a hard requirement for plain ingestion.
-    from vantage.perception.engine import DetectionEngine
-    from vantage.tracking.base import Tracker
-    from vantage.pose.contracts import PoseResult
-    from vantage.pose.engine import PoseEngine
-    from vantage.state.contracts import StateResult
     from vantage.activity.contracts import ActivityResult
     from vantage.activity.engine import ActivityEngine
+    from vantage.perception.engine import DetectionEngine
+    from vantage.pose.contracts import PoseResult
+    from vantage.pose.engine import PoseEngine
     from vantage.spatial.contracts import SpatialResult
     from vantage.spatial.engine import SpatialEngine
+    from vantage.state.contracts import StateResult
     from vantage.state.estimator import StateEstimator
+    from vantage.tracking.base import Tracker
 
 log = get_logger(__name__)
 
@@ -80,6 +82,8 @@ class RunResult:
     state_summary: dict[str, Any] = field(default_factory=dict)
     activity_summary: dict[str, Any] = field(default_factory=dict)
     spatial_summary: dict[str, Any] = field(default_factory=dict)
+    stage_health: dict[str, Any] = field(default_factory=dict)
+    resources: dict[str, Any] = field(default_factory=dict)
 
     def summary(self) -> str:
         base = (
@@ -134,10 +138,28 @@ class RunResult:
                     + ", ".join(f"{n} in {name}" for name, n in sorted(occupancy.items()))
                 )
             if relations:
-                parts.append(
-                    ", ".join(f"{n} {name}" for name, n in sorted(relations.items()))
-                )
+                parts.append(", ".join(f"{n} {name}" for name, n in sorted(relations.items())))
             base += f"\nspatial: {'; '.join(parts)} at end"
+        if self.resources:
+            detail = self.resources
+            memory = (
+                f"{detail.get('rss_mb')} MB RSS"
+                if detail.get("rss_mb") is not None
+                else "memory unavailable"
+            )
+            growth = detail.get("growth_mb")
+            if growth is not None and abs(growth) >= 1.0:
+                memory += f" ({growth:+.1f} MB since start)"
+            base += f"\nresources: {detail.get('cpu_cores', 0.0):.2f} cores, {memory}"
+        degraded = [stat for stat in self.stage_health.values() if stat.get("failures")]
+        if degraded:
+            # Never folded into a healthy-looking summary. A stage that failed
+            # is the most important thing on the line it appears on.
+            base += "\nDEGRADED: " + "; ".join(
+                f"{s['name']} {s['failures']}/{s['calls']} failed"
+                + (" (DISABLED)" if s.get("disabled") else "")
+                for s in degraded
+            )
         return base
 
 
@@ -146,7 +168,7 @@ def run_ingestion(
     *,
     shutdown: ShutdownController | None = None,
     sink: FrameSink | None = None,
-    engine: "DetectionEngine | None" = None,
+    engine: DetectionEngine | None = None,
     clock: Clock = SYSTEM_CLOCK,
 ) -> RunResult:
     """Ingest from the configured source until it ends or the user stops it.
@@ -187,6 +209,7 @@ def run_ingestion(
     reason = "source ended"
     snapshots: list[str] = []
     last_stats_log = clock.monotonic()
+    last_resource_log = last_stats_log
     stats = pipeline.stats()
     latest_detection = None
     detection_stale = False
@@ -210,6 +233,13 @@ def run_ingestion(
     spatial_engine = _build_spatial_engine(config)
     latest_spatial = None
 
+    # One guard per stage. A stage that throws loses its frame, not the run;
+    # a stage that throws repeatedly is disabled and said so, loudly.
+    stages = StageRegistry(max_consecutive=config.app.stage_failure_budget)
+    resources = ResourceSampler()
+    latest_resources = None
+    final_resources = None
+
     try:
         info = pipeline.start()
         log.info("ingestion started", extra={"vantage_fields": {"source": info.describe()}})
@@ -224,22 +254,39 @@ def run_ingestion(
                 should_detect = delivered_count % config.detection.interval == 0
                 delivered_count += 1
                 if should_detect:
-                    latest_detection = detector.detect(frame)
-                    detect_latency.observe(latest_detection.total_ms)
-                    detection_stale = False
-                    detections_run += 1
-                    if latest_detection.detections:
-                        log.debug(
-                            "detections",
-                            extra={"vantage_fields": {"summary": latest_detection.describe()}},
-                        )
+                    detected = stages.guard("detection").run(detector.detect, frame)
+                    if detected is not None:
+                        latest_detection = detected
+                        detect_latency.observe(latest_detection.total_ms)
+                        detection_stale = False
+                        detections_run += 1
+                        if latest_detection.detections:
+                            log.debug(
+                                "detections",
+                                extra={
+                                    "vantage_fields": {"summary": latest_detection.describe()}
+                                },
+                            )
                     # Tracking steps only when detection does. Advancing it on
                     # skipped frames would be asking the motion model to
                     # extrapolate with no evidence, which costs accuracy and
                     # buys nothing: the displayed boxes are already carried
                     # forward between passes.
-                    if tracker is not None:
-                        latest_tracking = tracker.update(latest_detection, frame=frame)
+                    #
+                    # Each stage below is separately guarded, and each depends
+                    # on the previous one having produced something. A failed
+                    # detection therefore skips the whole chain for this frame
+                    # rather than feeding the tracker last frame's boxes as if
+                    # they were new - which would corrupt identity rather than
+                    # just lose a frame.
+                    if tracker is not None and detected is not None:
+                        tracked = stages.guard("tracking").run(
+                            tracker.update, latest_detection, frame=frame
+                        )
+                    else:
+                        tracked = None
+                    if tracked is not None:
+                        latest_tracking = tracked
                         track_latency.observe(latest_tracking.tracking_ms)
                         tracking_steps += 1
                         if latest_tracking.tracks:
@@ -250,7 +297,11 @@ def run_ingestion(
                                 },
                             )
                         if state_estimator is not None:
-                            latest_state = state_estimator.update(latest_tracking)
+                            latest_state = stages.guard("state").run(
+                                state_estimator.update,
+                                latest_tracking,
+                                default=latest_state,
+                            )
                         # Pose counts tracking steps rather than delivered
                         # frames: its interval is relative to the frames the
                         # tracker actually advanced on, so the two intervals
@@ -258,45 +309,57 @@ def run_ingestion(
                         if estimator is not None and (
                             (tracking_steps - 1) % config.pose.interval == 0
                         ):
-                            latest_pose = estimator.estimate(frame, latest_tracking)
-                            if latest_pose.poses:
-                                pose_latency.observe(latest_pose.total_ms / len(latest_pose))
-                            pose_steps += 1
-                            if latest_pose.poses:
-                                log.debug(
-                                    "poses",
-                                    extra={
-                                        "vantage_fields": {"summary": latest_pose.describe()}
-                                    },
-                                )
-                        # Activity runs after pose so it can see this frame's
-                        # skeletons rather than the previous pass's.
+                            posed = stages.guard("pose").run(
+                                estimator.estimate, frame, latest_tracking
+                            )
+                            if posed is not None:
+                                latest_pose = posed
+                                pose_steps += 1
+                                if latest_pose.poses:
+                                    pose_latency.observe(
+                                        latest_pose.total_ms / len(latest_pose)
+                                    )
+                                    log.debug(
+                                        "poses",
+                                        extra={
+                                            "vantage_fields": {
+                                                "summary": latest_pose.describe()
+                                            }
+                                        },
+                                    )
                         # Spatial runs before activity so both see the same
                         # frame's poses, and neither depends on the other.
                         if spatial_engine is not None:
-                            latest_spatial = spatial_engine.update(
-                                latest_tracking, latest_pose, latest_state
+                            latest_spatial = stages.guard("spatial").run(
+                                spatial_engine.update,
+                                latest_tracking,
+                                latest_pose,
+                                latest_state,
+                                default=latest_spatial,
                             )
-                            if latest_spatial.relations or latest_spatial.crossings():
+                            if latest_spatial is not None and (
+                                latest_spatial.relations or latest_spatial.crossings()
+                            ):
                                 log.debug(
                                     "spatial",
                                     extra={
-                                        "vantage_fields": {
-                                            "summary": latest_spatial.describe()
-                                        }
+                                        "vantage_fields": {"summary": latest_spatial.describe()}
                                     },
                                 )
                         if activity_engine is not None and latest_state is not None:
-                            latest_activity = activity_engine.update(latest_state, latest_pose)
-                            notable = latest_activity.notable()
+                            latest_activity = stages.guard("activity").run(
+                                activity_engine.update,
+                                latest_state,
+                                latest_pose,
+                                default=latest_activity,
+                            )
+                            notable = latest_activity.notable() if latest_activity else ()
                             if notable:
                                 log.debug(
                                     "activity",
                                     extra={
                                         "vantage_fields": {
-                                            "summary": "; ".join(
-                                                e.describe() for e in notable
-                                            )
+                                            "summary": "; ".join(e.describe() for e in notable)
                                         }
                                     },
                                 )
@@ -319,6 +382,8 @@ def run_ingestion(
                         state=latest_state,
                         activity=latest_activity,
                         spatial=latest_spatial,
+                        stages=stages,
+                        resources=latest_resources,
                     )
                     if hud_enabled
                     else frame.editable_copy()
@@ -366,6 +431,12 @@ def run_ingestion(
             if interval and clock.monotonic() - last_stats_log >= interval:
                 last_stats_log = clock.monotonic()
                 _log_stats(stats)
+
+            resource_interval = config.app.resource_interval_s
+            if resource_interval and clock.monotonic() - last_resource_log >= resource_interval:
+                last_resource_log = clock.monotonic()
+                latest_resources = resources.sample()
+                log.info("resources", extra={"vantage_fields": latest_resources.to_dict()})
         else:
             reason = (
                 "frame limit reached"
@@ -373,6 +444,12 @@ def run_ingestion(
                 and stats.frames_delivered >= config.ingest.max_frames
                 else "source ended"
             )
+        # Sampled before teardown, deliberately. Taken after it, the reading
+        # includes the models being released and reports a *negative* growth -
+        # measured at -87 MB on a short run, which is true of the process and
+        # says nothing about whether the run leaked.
+        if config.app.resource_interval_s:
+            final_resources = resources.total()
     finally:
         pipeline.close()
         if owns_sink:
@@ -401,12 +478,14 @@ def run_ingestion(
         state_summary=_state_summary(latest_state),
         activity_summary=_activity_summary(latest_activity),
         spatial_summary=_spatial_summary(spatial_engine, latest_spatial),
+        stage_health=stages.to_dict(),
+        resources=(final_resources.to_dict() if final_resources is not None else {}),
     )
     log.info("run complete", extra={"vantage_fields": {"summary": result.summary()}})
     return result
 
 
-def _build_engine(config: VantageConfig) -> "DetectionEngine | None":
+def _build_engine(config: VantageConfig) -> DetectionEngine | None:
     """Construct the detector, or ``None`` when detection is disabled.
 
     Deliberately eager: resolving the model and compiling the graph before the
@@ -471,7 +550,7 @@ def _effective_confidence(config: VantageConfig) -> float:
     return floor
 
 
-def _build_pose_engine(config: VantageConfig) -> "PoseEngine | None":
+def _build_pose_engine(config: VantageConfig) -> PoseEngine | None:
     """Construct the pose estimator, or ``None`` when pose is disabled.
 
     Built before the source opens, for the same reason the detector is: a
@@ -486,7 +565,7 @@ def _build_pose_engine(config: VantageConfig) -> "PoseEngine | None":
     return estimator
 
 
-def _build_state_estimator(config: VantageConfig) -> "StateEstimator | None":
+def _build_state_estimator(config: VantageConfig) -> StateEstimator | None:
     """Construct the entity-state estimator, or ``None`` when it is off."""
     if not (config.state.enabled and config.tracking.enabled):
         return None
@@ -502,7 +581,7 @@ def _build_state_estimator(config: VantageConfig) -> "StateEstimator | None":
     )
 
 
-def _build_activity_engine(config: VantageConfig) -> "ActivityEngine | None":
+def _build_activity_engine(config: VantageConfig) -> ActivityEngine | None:
     """Construct the activity recogniser, or ``None`` when it is off."""
     if not (config.activity.enabled and config.tracking.enabled and config.state.enabled):
         return None
@@ -511,7 +590,7 @@ def _build_activity_engine(config: VantageConfig) -> "ActivityEngine | None":
     return build_activity_engine(config.activity)
 
 
-def _build_spatial_engine(config: VantageConfig) -> "SpatialEngine | None":
+def _build_spatial_engine(config: VantageConfig) -> SpatialEngine | None:
     """Construct the spatial analyser, or ``None`` when it is off."""
     if not (config.spatial.enabled and config.tracking.enabled):
         return None
@@ -521,7 +600,7 @@ def _build_spatial_engine(config: VantageConfig) -> "SpatialEngine | None":
 
 
 def _spatial_summary(
-    engine: "SpatialEngine | None", latest: "SpatialResult | None"
+    engine: SpatialEngine | None, latest: SpatialResult | None
 ) -> dict[str, Any]:
     if engine is None or latest is None:
         return {}
@@ -533,7 +612,7 @@ def _spatial_summary(
     }
 
 
-def _activity_summary(latest: "ActivityResult | None") -> dict[str, Any]:
+def _activity_summary(latest: ActivityResult | None) -> dict[str, Any]:
     if latest is None:
         return {}
     return {
@@ -544,9 +623,9 @@ def _activity_summary(latest: "ActivityResult | None") -> dict[str, Any]:
 
 
 def _pose_summary(
-    estimator: "PoseEngine | None",
+    estimator: PoseEngine | None,
     latency: LatencyTracker,
-    latest: "PoseResult | None",
+    latest: PoseResult | None,
     passes: int,
 ) -> dict[str, Any]:
     if estimator is None or not passes:
@@ -564,7 +643,7 @@ def _pose_summary(
     }
 
 
-def _state_summary(latest: "StateResult | None") -> dict[str, Any]:
+def _state_summary(latest: StateResult | None) -> dict[str, Any]:
     if latest is None:
         return {}
     return {
@@ -575,7 +654,7 @@ def _state_summary(latest: "StateResult | None") -> dict[str, Any]:
 
 
 def _detection_summary(
-    detector: "DetectionEngine | None", latency: LatencyTracker, passes: int
+    detector: DetectionEngine | None, latency: LatencyTracker, passes: int
 ) -> dict[str, Any]:
     if detector is None or not passes:
         return {}
@@ -594,7 +673,7 @@ def _detection_summary(
     }
 
 
-def _entity_total(tracker: "Tracker | None") -> int:
+def _entity_total(tracker: Tracker | None) -> int:
     """Distinct entities published so far, or 0 for a tracker that cannot say.
 
     The count comes from the tracker rather than from a set accumulated here,
@@ -607,7 +686,7 @@ def _entity_total(tracker: "Tracker | None") -> int:
 
 
 def _tracking_summary(
-    tracker: "Tracker | None",
+    tracker: Tracker | None,
     latency: LatencyTracker,
     steps: int,
 ) -> dict[str, Any]:

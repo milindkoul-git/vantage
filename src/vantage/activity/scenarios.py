@@ -26,7 +26,7 @@ perfectly on the positive cases and be useless in a building.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 from vantage.activity.contracts import Activity
 from vantage.perception.contracts import BoundingBox
@@ -37,14 +37,14 @@ from vantage.pose.contracts import (
     LEFT_KNEE,
     LEFT_SHOULDER,
     LEFT_WRIST,
-    Keypoint,
-    Pose,
-    Posture,
     RIGHT_ANKLE,
     RIGHT_HIP,
     RIGHT_KNEE,
     RIGHT_SHOULDER,
     RIGHT_WRIST,
+    Keypoint,
+    Pose,
+    Posture,
 )
 from vantage.tracking.contracts import Track, TrackState
 
@@ -318,8 +318,9 @@ SCENARIOS: dict[str, ActivityScenario] = {
             "recognised but idle and, eventually, loitering."
         ),
         beats=(
-            Beat(seconds=25.0, speed=0.03, posture=Posture.STANDING, grace_s=22.0,
-                 expect=LOITER),
+            Beat(
+                seconds=25.0, speed=0.03, posture=Posture.STANDING, grace_s=22.0, expect=LOITER
+            ),
         ),
         forbidden=frozenset(
             {Activity.WALKING, Activity.RUNNING, Activity.FALLING, Activity.SITTING_DOWN}

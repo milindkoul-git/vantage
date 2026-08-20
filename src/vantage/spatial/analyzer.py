@@ -29,8 +29,7 @@ from collections import deque
 from dataclasses import dataclass
 
 from vantage.core.errors import ConfigError
-from vantage.pose.contracts import LEFT_WRIST, Pose, RIGHT_WRIST
-from vantage.state.contracts import MotionState
+from vantage.pose.contracts import LEFT_WRIST, RIGHT_WRIST, Pose
 from vantage.spatial.contracts import (
     EntitySpatial,
     Relation,
@@ -39,6 +38,7 @@ from vantage.spatial.contracts import (
     ZoneEvent,
     ZoneOccupancy,
 )
+from vantage.state.contracts import MotionState
 from vantage.tracking.contracts import Track
 
 
@@ -279,9 +279,7 @@ class SpatialAnalyzer:
                 )
             )
 
-        interaction = self._interaction(
-            first, second, state, poses, motion, now, separation
-        )
+        interaction = self._interaction(first, second, state, poses, motion, now, separation)
         if interaction is not None:
             found.append(interaction)
         return found
@@ -294,7 +292,9 @@ class SpatialAnalyzer:
         graph of it, and a least-squares fit would imply a precision that
         detector box jitter does not support.
         """
-        window = [(t, d) for t, d in state.separations if now - t <= self._params.approach_window_s]
+        window = [
+            (t, d) for t, d in state.separations if now - t <= self._params.approach_window_s
+        ]
         if len(window) < 2:
             return None
         span = window[-1][0] - window[0][0]
@@ -336,7 +336,9 @@ class SpatialAnalyzer:
             state.reach_seen = False
             return None
 
-        reaching = _wrist_inside(poses.get(person.track_id), thing, self._params.reach_confidence)
+        reaching = _wrist_inside(
+            poses.get(person.track_id), thing, self._params.reach_confidence
+        )
         stopped = motion.get(person.track_id) is MotionState.STATIONARY
         if not reaching and not stopped:
             # Moving, or motion unknown because state is not running. Without
@@ -363,16 +365,17 @@ class SpatialAnalyzer:
             state.interacting_since = now
 
         if state.reach_seen:
-            confidence, evidence = 0.85, (
-                f"wrist inside the object box, sustained {held:.1f}s"
-            )
+            confidence, evidence = 0.85, (f"wrist inside the object box, sustained {held:.1f}s")
         else:
             # Deliberately capped low. Two boxes close together in a flat image
             # is consistent with a person three metres behind the object, and
             # nothing in a single view rules that out.
-            confidence, evidence = 0.4, (
-                f"stationary {separation:.2f} heights away for {held:.1f}s, no reach "
-                "observed (2-D proximity only)"
+            confidence, evidence = (
+                0.4,
+                (
+                    f"stationary {separation:.2f} heights away for {held:.1f}s, no reach "
+                    "observed (2-D proximity only)"
+                ),
             )
         return RelationObservation(
             relation=Relation.INTERACTING,

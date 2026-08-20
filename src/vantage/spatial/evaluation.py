@@ -16,7 +16,7 @@ from dataclasses import dataclass, field
 
 from vantage.pose.contracts import PoseResult
 from vantage.spatial.analyzer import SpatialAnalyzer, SpatialParams
-from vantage.spatial.contracts import Relation, ZoneEvent
+from vantage.spatial.contracts import Relation
 from vantage.spatial.engine import SpatialEngine
 from vantage.spatial.scenarios import SpatialScenario, generate
 from vantage.state.estimator import StateEstimator, StateParams
@@ -64,9 +64,7 @@ def _label(item: tuple[Relation, int, int]) -> str:
     return f"{relation.value}:{first}:{second}"
 
 
-def evaluate(
-    scenario: SpatialScenario, params: SpatialParams | None = None
-) -> SpatialMetrics:
+def evaluate(scenario: SpatialScenario, params: SpatialParams | None = None) -> SpatialMetrics:
     """Run one scenario end to end and score it."""
     metrics = SpatialMetrics(
         scenario=scenario.name,
@@ -104,9 +102,7 @@ def evaluate(
         metrics.frames += 1
 
         for relation in result.relations:
-            key = _label(
-                (relation.relation, relation.subject_track, relation.object_track)
-            )
+            key = _label((relation.relation, relation.subject_track, relation.object_track))
             metrics.found[key] = metrics.found.get(key, 0) + 1
             metrics.peak_confidence[key] = max(
                 metrics.peak_confidence.get(key, 0.0), relation.confidence

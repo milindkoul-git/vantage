@@ -45,7 +45,7 @@ class SpatialEngine:
         self,
         tracking: TrackingResult,
         pose: PoseResult | None = None,
-        state: "StateResult | None" = None,
+        state: StateResult | None = None,
     ) -> SpatialResult:
         """Advance by ``tracking.elapsed_s`` and report the scene graph.
 

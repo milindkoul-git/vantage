@@ -34,9 +34,9 @@ Estimates are labelled as such
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Iterator
 
 from vantage.perception.contracts import BoundingBox
 
@@ -200,10 +200,14 @@ class TrackingResult:
     def describe(self) -> str:
         if not self.tracks:
             return f"{self.source_id}#{self.frame_index}: no tracks"
-        summary = ", ".join(f"{count}x {label}" for label, count in sorted(self.counts().items()))
+        summary = ", ".join(
+            f"{count}x {label}" for label, count in sorted(self.counts().items())
+        )
         coasting = sum(1 for t in self.tracks if t.is_coasting)
         extra = f", {coasting} coasting" if coasting else ""
-        return f"{self.source_id}#{self.frame_index}: {summary}{extra} ({self.tracking_ms:.1f} ms)"
+        return (
+            f"{self.source_id}#{self.frame_index}: {summary}{extra} ({self.tracking_ms:.1f} ms)"
+        )
 
 
 def empty_tracking_result(

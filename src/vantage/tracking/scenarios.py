@@ -205,7 +205,9 @@ def _jitter(
     y2 = box.y2 + offsets[3]
     # Independent corner noise can invert a small box; order the corners rather
     # than clamping, which would bias every jittered box in one direction.
-    return BoundingBox(min(x1, x2), min(y1, y2), max(x1, x2), max(y1, y2)).clipped(width, height)
+    return BoundingBox(min(x1, x2), min(y1, y2), max(x1, x2), max(y1, y2)).clipped(
+        width, height
+    )
 
 
 def _spurious(
@@ -307,9 +309,7 @@ def _build(
                 )
             )
 
-        built.append(
-            GroundTruthFrame(index=index, timestamp=t, objects=tuple(objects))
-        )
+        built.append(GroundTruthFrame(index=index, timestamp=t, objects=tuple(objects)))
 
     return Scenario(
         name=name,
@@ -429,9 +429,15 @@ def erratic_scenario(frames: int = 180) -> Scenario:
     return _build(
         "erratic",
         [
-            _Mover(0, 300.0, 250.0, 90.0, 40.0, 65.0, 165.0, depth=0, wobble=150.0, wobble_hz=0.9),
-            _Mover(1, 900.0, 450.0, -70.0, -30.0, 80.0, 200.0, depth=1, wobble=180.0, wobble_hz=0.7),
-            _Mover(2, 640.0, 150.0, 140.0, 25.0, 55.0, 140.0, depth=2, wobble=120.0, wobble_hz=1.3),
+            _Mover(
+                0, 300.0, 250.0, 90.0, 40.0, 65.0, 165.0, depth=0, wobble=150.0, wobble_hz=0.9
+            ),
+            _Mover(
+                1, 900.0, 450.0, -70.0, -30.0, 80.0, 200.0, depth=1, wobble=180.0, wobble_hz=0.7
+            ),
+            _Mover(
+                2, 640.0, 150.0, 140.0, 25.0, 55.0, 140.0, depth=2, wobble=120.0, wobble_hz=1.3
+            ),
         ],
         frames=frames,
         frame_size=(1280, 720),

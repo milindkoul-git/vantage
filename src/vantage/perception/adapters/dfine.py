@@ -72,9 +72,7 @@ class DFineAdapter(ModelAdapter):
 
         resized = cv2.resize(image, (width, height), interpolation=cv2.INTER_LINEAR)
         rgb = cv2.cvtColor(resized, cv2.COLOR_BGR2RGB)
-        tensor = np.ascontiguousarray(
-            rgb.astype(np.float32).transpose(2, 0, 1)[None] / 255.0
-        )
+        tensor = np.ascontiguousarray(rgb.astype(np.float32).transpose(2, 0, 1)[None] / 255.0)
 
         return PreparedInput(
             tensor=tensor,

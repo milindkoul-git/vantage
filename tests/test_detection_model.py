@@ -163,5 +163,5 @@ class TestModelStoreIntegrity:
 
         from vantage.core.errors import VantageError
 
-        with pytest.raises(VantageError, match="integrity verification"):
+        with pytest.raises(VantageError, match=r"integrity verification"):
             store.ensure(spec, allow_download=False)
