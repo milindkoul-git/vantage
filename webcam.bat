@@ -5,12 +5,14 @@ REM
 REM  Double-click this file, or run it from a terminal. An optional first word
 REM  picks what to run:
 REM
-REM      webcam.bat            pose    (default) people, skeletons, motion state
+REM      webcam.bat            pose     (default) people, skeletons, motion state
 REM      webcam.bat pose       same, said explicitly
+REM      webcam.bat activity   pose plus activity recognition, tuned to demo
 REM      webcam.bat objects    365-class detection + tracking, no pose
 REM      webcam.bat plain      detection only, no tracking and no pose
+REM      webcam.bat checks     no camera: score the tracker and activity rules
 REM
-REM  The two modes use different detectors on purpose, and the reason is
+REM  The detection modes use different detectors on purpose, and the reason is
 REM  measured rather than assumed. Pose costs about 5 ms per person on the
 REM  iGPU, but only when the detector leaves the GPU room: paired with
 REM  yolox-tiny (10.8 ms) the whole pipeline holds 30 fps, while the 365-class
@@ -19,6 +21,7 @@ REM
 REM  Anything else you type is appended to the vantage command, so it
 REM  overrides these defaults:
 REM
+REM      webcam.bat activity --set activity.loiter_s=20
 REM      webcam.bat pose --pose-max-persons 2
 REM      webcam.bat objects --classes person,laptop
 REM      webcam.bat --source webcam:1 --no-hud
@@ -44,6 +47,11 @@ if /I "%~1"=="pose" (
     shift
     goto parse
 )
+if /I "%~1"=="activity" (
+    set "MODE=activity"
+    shift
+    goto parse
+)
 if /I "%~1"=="objects" (
     set "MODE=objects"
     shift
@@ -54,16 +62,32 @@ if /I "%~1"=="plain" (
     shift
     goto parse
 )
+if /I "%~1"=="checks" (
+    set "MODE=checks"
+    shift
+    goto parse
+)
 set "ARGS=%ARGS% %1"
 shift
 goto parse
 :parsed
 
 REM Per-mode defaults. An environment variable, if set, still wins over these.
+set "MODE_EXTRA="
 if /I "%MODE%"=="pose" (
     set "MODE_MODEL=yolox-tiny"
     set "MODE_INTERVAL=1"
     set "MODE_FLAGS=--track --pose"
+)
+if /I "%MODE%"=="activity" (
+    set "MODE_MODEL=yolox-tiny"
+    set "MODE_INTERVAL=1"
+    set "MODE_FLAGS=--track --pose"
+    REM Loitering ships at 20 seconds, which is a long time to stand still in
+    REM front of your own webcam to see whether a feature works. Five makes it
+    REM demonstrable; it is a demo value, not a recommendation, and the banner
+    REM below says so rather than letting you infer the shipped default is 5.
+    set "MODE_EXTRA=--set activity.loiter_s=5"
 )
 if /I "%MODE%"=="objects" (
     set "MODE_MODEL=dfine-s-obj365"
@@ -100,16 +124,57 @@ if not exist "%PYTHON%" (
     goto finish
 )
 
+if /I "%MODE%"=="checks" goto checks
+
 REM Echo the real command rather than the defaults: appended arguments are
 REM allowed to override, and a banner built from the variables above would
 REM report the wrong model whenever they did.
-set "VARGS=run --source %VANTAGE_SOURCE% %MODE_FLAGS% --model %VANTAGE_MODEL% --device %VANTAGE_DEVICE% --detect-interval %VANTAGE_INTERVAL%%ARGS%"
+set "VARGS=run --source %VANTAGE_SOURCE% %MODE_FLAGS% --model %VANTAGE_MODEL% --device %VANTAGE_DEVICE% --detect-interval %VANTAGE_INTERVAL% %MODE_EXTRA%%ARGS%"
 echo [%MODE%] vantage %VARGS%
+if /I "%MODE%"=="activity" (
+    echo.
+    echo   Watch the HUD "activity" line. To see each activity:
+    echo     walking / running  - walk across the frame, then jog
+    echo     loitering          - stand still for 5s ^(shipped default is 20s^)
+    echo     arm_raised         - hold a hand above your shoulder
+    echo     sitting_down       - sit, with your KNEES in frame
+    echo   Posture reads "unknown" unless your legs are visible; that is the
+    echo   correct answer, not a fault, and the HUD prints the reason.
+)
+echo.
 echo Press q or Esc in the video window to stop, h for the HUD, s for a snapshot.
 echo.
 
 "%PYTHON%" -m vantage %VARGS%
 set "RESULT=%ERRORLEVEL%"
+goto finish
+
+:checks
+REM No camera, no weights, no inference runtime: both harnesses score their
+REM subsystem against scripted ground truth, and both exit non-zero on failure.
+REM
+REM Arguments are refused rather than forwarded. The two harnesses have
+REM different scenario names, so "checks --scenarios walk" would score the
+REM activity rules and then fail on the tracker - a half-success that reads as
+REM a bug in the tool. Per-harness flags belong on the harness.
+if not "%ARGS%"=="" (
+    echo.
+    echo   'checks' takes no arguments, because it runs two harnesses whose
+    echo   scenario names differ. Run one directly instead:
+    echo.
+    echo       .venv\Scripts\python.exe -m vantage activity eval%ARGS%
+    echo       .venv\Scripts\python.exe -m vantage track eval%ARGS%
+    echo.
+    set "RESULT=2"
+    goto finish
+)
+echo [checks] scoring the tracker and the activity rules against ground truth
+echo.
+"%PYTHON%" -m vantage activity eval
+set "RESULT=%ERRORLEVEL%"
+echo.
+"%PYTHON%" -m vantage track eval
+if not "%ERRORLEVEL%"=="0" set "RESULT=%ERRORLEVEL%"
 
 :finish
 popd

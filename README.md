@@ -386,19 +386,33 @@ what to run:
 
 ```bat
 webcam.bat            :: pose (default) - people, skeletons, motion state
+webcam.bat activity   :: pose plus activity recognition, tuned to demonstrate
 webcam.bat objects    :: 365-class detection + tracking, no pose
 webcam.bat plain      :: detection only, no tracking and no pose
+webcam.bat checks     :: no camera - score the tracker and the activity rules
 ```
 
-The two detection modes use **different detectors on purpose**, and the reason
-is measured rather than assumed. Pose costs about 5 ms per person on the iGPU,
-but only when the detector leaves the GPU room: paired with `yolox-tiny`
-(10.8 ms) the whole pipeline holds 30 fps, while the 365-class
-`dfine-s-obj365` (84 ms) needs the frame budget for itself.
+The detection modes use **different detectors on purpose**, and the reason is
+measured rather than assumed. Pose costs about 5 ms per person on the iGPU, but
+only when the detector leaves the GPU room: paired with `yolox-tiny` (10.8 ms)
+the whole pipeline holds 30 fps, while the 365-class `dfine-s-obj365` (84 ms)
+needs the frame budget for itself.
+
+`activity` mode lowers `loiter_s` from 20 seconds to 5, because 20 seconds is a
+long time to stand still in front of your own webcam to find out whether a
+feature works. It is a **demo value, not a recommendation**, and the banner says
+so rather than letting you infer the shipped default is 5. It also prints what
+to physically do to trigger each activity.
+
+`checks` runs both ground-truth harnesses - no camera, no weights, no inference
+runtime - and exits non-zero if either fails. It takes no arguments, because the
+two harnesses have different scenario names and forwarding a flag to both would
+score one and fail the other.
 
 Anything else you type is appended and therefore overrides the defaults:
 
 ```bat
+webcam.bat activity --set activity.loiter_s=20
 webcam.bat pose --pose-max-persons 2
 webcam.bat objects --classes person,laptop
 webcam.bat --source webcam:1 --no-hud
