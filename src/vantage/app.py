@@ -550,7 +550,16 @@ def run_ingestion(
                     image = draw_detections(image, latest_detection, stale=detection_stale)
                 # Skeletons go on top of boxes, not instead of them: the box is
                 # what carries the entity id and the dashed/solid distinction.
-                if latest_pose is not None:
+                # Not on a carried-forward frame. Boxes survive being stale
+                # because the tracker predicts them forward, which is what the
+                # dashed outline says; a skeleton has no such prediction, so the
+                # carried copy stays at the coordinates the body has since left.
+                # Drawn solid over a moved subject it reads as a current
+                # measurement of a pose nobody is holding - joints landing on
+                # the background, bones crossing the frame. The pose engine
+                # already refuses to *estimate* a coasting track for the same
+                # reason; this stops the overlay reinstating what it declined.
+                if latest_pose is not None and not detection_stale:
                     image = draw_poses(
                         image,
                         latest_pose,

@@ -136,7 +136,14 @@ if /I "%MODE%"=="watch" (
     REM exactly like a chart that is empty because nothing happened.
     set "MODE_MODEL=yolox-tiny"
     set "MODE_INTERVAL=1"
-    set "MODE_FLAGS=--track --pose --dashboard --store"
+    REM --no-display on purpose. The browser IS the interface in this mode, and
+    REM an OpenCV window alongside it is two views of the same thing where only
+    REM one of them can be closed safely: the run ends when the video window
+    REM closes, so closing the redundant window killed the dashboard the person
+    REM was actually reading. Measured: it also drops ~30%% of frames early on,
+    REM because encoding a window and a JPEG stream from the same 33 ms budget
+    REM does not fit.
+    set "MODE_FLAGS=--track --pose --dashboard --store --no-display"
 )
 
 if not defined VANTAGE_SOURCE   set "VANTAGE_SOURCE=webcam:0"
@@ -185,8 +192,13 @@ if /I "%MODE%"=="activity" (
 if /I "%MODE%"=="watch" (
     echo.
     echo   Opening http://localhost:8080 in your browser.
-    echo   The video window opens too; close either one to keep watching in
-    echo   the other. Press q in the video window to stop everything.
+    echo.
+    echo   There is no video window in this mode - the page is the interface,
+    echo   and it shows the camera with the boxes and skeletons drawn on it.
+    echo   Recording is on, so the traffic chart and event list fill up as it
+    echo   runs. On a fresh database they start empty and say so.
+    echo.
+    echo   To stop: press Ctrl+C here, or close this console window.
     echo.
     start "" "http://localhost:8080"
 )
