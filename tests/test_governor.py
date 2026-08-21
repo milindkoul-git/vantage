@@ -252,11 +252,32 @@ class TestPipelineIntegration:
         assert result.frames == 60
 
     def test_a_fast_detector_leaves_it_alone(self) -> None:
+        """A detector that costs nothing must not drive sustained escalation.
+
+        Asserting ``peak_interval == 1`` was wrong, and flaky about one run in
+        three. The governor measures real wall-clock analysis cost, so a busy
+        machine can push one frame over budget even when the detector itself is
+        free - and raising the interval in response is the governor working, not
+        failing. The test was asserting that the machine running it was idle.
+
+        What is actually guaranteed is that a free detector produces no
+        *sustained* pressure: at most a single step in response to transient
+        load, and the interval comes back down.
+        """
         from vantage.app import run_ingestion
 
         config, engine = self.build(adaptive=True, cost_ms=0.0)
         result = run_ingestion(config, engine=engine)
-        assert result.adaptive["peak_interval"] == 1
+        adaptive = result.adaptive
+
+        assert adaptive["peak_interval"] <= 2, (
+            f"a zero-cost detector escalated to {adaptive['peak_interval']}, which "
+            "is more than transient machine load can explain"
+        )
+        assert adaptive["interval"] == 1, (
+            "the interval did not return to 1 after the load passed, which is a "
+            "governor that ratchets rather than adapts"
+        )
 
     def test_disabled_means_no_governor_at_all(self) -> None:
         from vantage.app import run_ingestion
