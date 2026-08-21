@@ -577,14 +577,29 @@ class TestThePageMatchesTheBackend:
         dashboard into a broken-looking one the moment the network is gone -
         which, for something watching a camera, is exactly when it matters.
         """
+        import re
+
         page = self.page()
-        for marker in ("http://", "https://", "//cdn", "//unpkg", "//fonts."):
-            offenders = [
-                line.strip()
-                for line in page.splitlines()
-                if marker in line and "localhost" not in line and "://" in line
-            ]
-            assert not offenders, f"external reference: {offenders[:2]}"
+
+        # Inline data: URIs are not requests, and an SVG one legitimately
+        # contains http://www.w3.org/2000/svg - an XML namespace *name*, which
+        # no browser ever fetches. Removing them first is the difference between
+        # testing for network access and testing for the letters "http".
+        without_data_uris = re.sub(r'"data:[^"]*"', '"data:"', page)
+        without_data_uris = re.sub(r"'data:[^']*'", "'data:'", without_data_uris)
+
+        pattern = (
+            r"""(?:src|href)\s*=\s*["']([^"']+)"""
+            r"""|url\(\s*["']?([^)"']+)"""
+        )
+        fetchable = re.findall(pattern, without_data_uris)
+        for a, b in fetchable:
+            target = (a or b).strip()
+            if not target or target.startswith(("data:", "#", "/", "./")):
+                continue
+            assert not target.startswith(("http://", "https://", "//")), (
+                f"the page fetches {target!r} from the network"
+            )
 
     def test_the_javascript_parses(self) -> None:
         """A syntax error here kills the whole page, silently.

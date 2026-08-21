@@ -247,7 +247,13 @@ def run_ingestion(
     owns_sink = sink is None
     sink = sink or _build_sink(config)
     hud = HudRenderer()
-    hud_enabled = config.display.hud
+    # The telemetry HUD is a *window* feature. It is a dense table of numbers
+    # painted over the frame, which is the right answer when the video window is
+    # all you have - and the wrong one once the dashboard exists, where the same
+    # numbers are laid out as their own panel and the burned-in copy merely
+    # covers the person being analysed. So it follows the window: on when there
+    # is a window, off when the browser is the only consumer.
+    hud_enabled = config.display.hud and config.display.enabled
 
     source = create_source(config.source, clock=clock)
     pipeline = IngestionPipeline(

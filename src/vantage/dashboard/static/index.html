@@ -4,6 +4,9 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Vantage</title>
+<!-- Inline, so the browser does not request /favicon.ico and log a 404 on
+     every single page load. An SVG data URI needs no file and no route. -->
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%230B0F14'/%3E%3Ccircle cx='16' cy='16' r='7' fill='none' stroke='%2335D0BA' stroke-width='2.5'/%3E%3Ccircle cx='16' cy='16' r='2.5' fill='%2335D0BA'/%3E%3C/svg%3E">
 <!--
   One self-contained file. No CDN, no build step, no external request of any
   kind - not a font, not an icon, not a script. That is not minimalism for its
@@ -187,12 +190,22 @@
   .stage {
     position: relative;
     background: #000;
-    aspect-ratio: 4 / 3;
+    /* Height first, aspect ratio second. A 4:3 box across a 1200px column is
+       900px tall - the live view then fills the entire first screen and pushes
+       every number, chart and event below the fold, which is the opposite of
+       what a monitoring page is for. The video is the thing you glance at; the
+       state is the thing you read. */
+    height: clamp(240px, 46vh, 460px);
     display: flex;
     align-items: center;
     justify-content: center;
   }
+  /* [hidden] is an attribute and `.stage img` is a class-plus-type selector, so
+     the rule below wins on specificity and the "hidden" image stayed in the
+     layout showing its alt text and displacing the placeholder. */
   .stage img { width: 100%; height: 100%; object-fit: contain; display: block; }
+  .stage img[hidden] { display: none; }
+  .placeholder[hidden] { display: none; }
 
   .placeholder {
     color: var(--faint);
@@ -230,10 +243,17 @@
   .kpis {
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
-    gap: 1px;
-    background: var(--line-soft);
+    /* Dividers are drawn on the tiles, not made from a 1px gap over a coloured
+       container. With the gap trick, a row that does not fill - six tiles across
+       a five-tile width - leaves the container colour showing where the missing
+       cells would be, which reads as an empty broken panel. */
+    background: var(--panel);
   }
-  .kpi { background: var(--panel); padding: 11px 14px; }
+  .kpi {
+    background: var(--panel);
+    padding: 11px 14px;
+    box-shadow: inset -1px 0 0 var(--line-soft), inset 0 -1px 0 var(--line-soft);
+  }
   .kpi dt {
     font-size: 10.5px;
     letter-spacing: .1em;
@@ -356,12 +376,20 @@
     background: var(--panel);
     padding: 9px 14px;
     display: grid;
-    grid-template-columns: 62px 4px 1fr auto;
+    /* Wide enough for a 12-hour clock with its AM/PM, which is what
+       toLocaleTimeString gives in en-US. At 62px it wrapped onto two lines and
+       every row in the list grew to match. */
+    grid-template-columns: 84px 4px 1fr auto;
     gap: 10px;
     align-items: baseline;
     font-size: 13px;
   }
-  .ev time { font-family: var(--mono); font-size: 11.5px; color: var(--faint); }
+  .ev time {
+    font-family: var(--mono);
+    font-size: 11.5px;
+    color: var(--faint);
+    white-space: nowrap;
+  }
   .ev .bar { align-self: stretch; border-radius: 2px; background: var(--faint); }
   /* info / notice / alert are the three the event engine actually emits.
      This styled info / warning / critical - names that look right and are not
@@ -387,6 +415,17 @@
   }
   .drawer[open] { display: flex; }
   .drawer .card { max-width: 620px; width: 100%; max-height: 80vh; overflow: auto; }
+
+  .facts { display: flex; flex-direction: column; gap: 7px; }
+  .fact { display: flex; align-items: baseline; gap: 10px; font-size: 12.5px; }
+  .fact span:first-child { color: var(--faint); }
+  .fact span:last-child {
+    margin-left: auto;
+    font-family: var(--mono);
+    font-variant-numeric: tabular-nums;
+    color: var(--text);
+    text-align: right;
+  }
 
   .footer {
     color: var(--faint);
@@ -456,9 +495,9 @@
         <div class="chartwrap"><canvas id="chart" role="img" aria-label="Traffic over time"></canvas></div>
         <div class="legend">
           <span><i style="background:var(--accent-dk)"></i>observed</span>
-          <span><i style="background:var(--crit)"></i>above baseline</span>
-          <span><i style="background:var(--info)"></i>below baseline</span>
-          <span><i style="background:var(--line)"></i>no data recorded</span>
+          <span><i style="background:var(--crit);border-radius:50%"></i>unusually high</span>
+          <span><i style="background:var(--info);border-radius:50%"></i>unusually low</span>
+          <span><i style="background:var(--line)"></i>nothing recorded</span>
         </div>
         <div class="note" id="an-note">loading</div>
       </section>
@@ -473,6 +512,13 @@
       <section class="card">
         <h2>Pipeline</h2>
         <div id="health" class="pad" style="font-size:12.5px;color:var(--dim)">-</div>
+      </section>
+
+      <section class="card">
+        <h2>History <div class="spacer"></div><span class="pill" id="hist-window">-</span></h2>
+        <div id="history" class="pad">
+          <div class="empty" style="padding:8px 0">no history yet</div>
+        </div>
       </section>
     </div>
   </div>
@@ -510,6 +556,22 @@
 
 <script>
 "use strict";
+
+/* ---- module state ---------------------------------------------------
+   Every piece of top-level state is declared here, before anything runs.
+   That ordering is load bearing rather than tidy: `let` and `const` are
+   hoisted but left uninitialised until their declaration is reached, so
+   touching one earlier throws a ReferenceError - and a throw at top level
+   abandons the rest of the script.
+
+   That is exactly what happened. The theme initialiser ran near the top,
+   called drawChart(), which read `chartData` - declared two hundred lines
+   further down. The page loaded, rendered its empty shell, and never started
+   a single poll. It looked like a server problem and was a source-ordering
+   one, and no syntax check can see it, because the syntax is fine.        */
+
+let chartData = null;   // the last analytics payload the chart drew
+let started = false;    // whether the MJPEG stream has been attached yet
 
 const $ = (id) => document.getElementById(id);
 
@@ -574,8 +636,6 @@ function setStatus(text, kind) {
 }
 
 /* ---- live ----------------------------------------------------------- */
-
-let started = false;
 
 function renderEntities(entities) {
   const host = $("entities");
@@ -691,7 +751,12 @@ async function pollLive() {
 
     renderHealth(live.health, stats);
 
-    if ($("ev-since").value === "") renderEvents(live.events || [], "no events yet");
+    if ($("ev-since").value === "") {
+      renderEvents(
+        live.events || [],
+        "nothing has happened since this page opened — "
+        + "choose a window above to read stored history");
+    }
   } catch (err) {
     setStatus("disconnected", "down");
   }
@@ -737,8 +802,6 @@ $("ev-since").addEventListener("change", loadEvents);
 $("ev-sev").addEventListener("change", loadEvents);
 
 /* ---- chart ---------------------------------------------------------- */
-
-let chartData = null;
 
 function css(name) {
   return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
@@ -818,14 +881,24 @@ function drawChart() {
     }
 
     const h = Math.max(bucket.value > 0 ? 1.5 : 0, (bucket.value / top) * plotH);
-    ctx.fillStyle = anomaly
-      ? (anomaly.direction === "above" ? crit : info)
-      : accent;
+
+    /* The bar always carries the value, in one colour. Recolouring the whole
+       bar for an anomaly was tried and is worse: on a period where many
+       buckets are unusual the chart turns almost entirely red, which reads as
+       a broken widget rather than a busy week, and swapping the fill also
+       destroys the eye's ability to compare heights across the series. The
+       magnitude belongs to the bar; "unusual" is a separate fact and gets a
+       separate mark. */
+    ctx.fillStyle = accent;
     ctx.fillRect(x, padT + plotH - h, barW, h);
 
     if (anomaly) {
+      const mark = anomaly.direction === "above" ? crit : info;
+      ctx.fillStyle = mark;
+      // A cap on the bar, plus a dot above it: legible at one bar wide.
+      ctx.fillRect(x, padT + plotH - h, barW, Math.min(3, h));
       ctx.beginPath();
-      ctx.arc(x + barW / 2, padT + plotH - h - 5, 2.5, 0, Math.PI * 2);
+      ctx.arc(x + barW / 2, Math.max(padT + 3, padT + plotH - h - 6), 2.5, 0, Math.PI * 2);
       ctx.fill();
     }
   });
@@ -872,9 +945,18 @@ async function loadAnalytics() {
       const above = data.anomalies.filter((a) => a.direction === "above").length;
       const below = data.anomalies.length - above;
       parts.push(`${data.anomalies.length} unusual (${above} above, ${below} below baseline)`);
+      /* More than a third of a window being unusual usually means the baseline
+         does not describe this period - a new camera, a changed scene, a moved
+         schedule - rather than that a third of the week was an incident. Saying
+         so is more useful than letting the reader count dots and panic. */
+      if (data.judged && data.anomalies.length / data.judged > 0.33) {
+        parts.push("that is most of the window, so the baseline probably does not "
+          + "describe this period yet rather than the period being unusual");
+      }
     }
 
     $("an-note").textContent = parts.join(" · ");
+    renderHistory(data);
     /* Low coverage is called out rather than left for the reader to infer from
        grey bars. A chart of a week holding four hours of data looks exactly
        like a quiet week. */
@@ -886,6 +968,51 @@ async function loadAnalytics() {
     $("an-note").textContent = "could not load history";
   }
 }
+/* Built from the payload the chart already has, rather than from a second
+   request. Two panels describing the same window from two fetches taken
+   seconds apart can disagree, and a dashboard that contradicts itself is worse
+   than one that says less. */
+function renderHistory(data) {
+  const host = $("history");
+  const withData = data.buckets.filter((b) => b.samples > 0 || b.known_zero);
+  $("hist-window").textContent = $("an-since").value;
+
+  if (!withData.length) {
+    host.innerHTML = '<div class="empty" style="padding:8px 0">'
+      + "nothing recorded in this window</div>";
+    return;
+  }
+
+  const isFraction = data.metric === "moving_fraction";
+  const isRate = isFraction || data.metric === "mean_speed";
+  const fmt = (v) => isFraction ? Math.round(v * 100) + "%"
+    : data.metric === "mean_speed" ? v.toFixed(2) : Math.round(v).toLocaleString();
+
+  const peak = withData.reduce((a, b) => (b.value > a.value ? b : a));
+  const quiet = withData.reduce((a, b) => (b.value < a.value ? b : a));
+  const mean = withData.reduce((sum, b) => sum + b.value, 0) / withData.length;
+
+  const facts = [];
+  if (!isRate) {
+    facts.push(["Total", fmt(data.buckets.reduce((sum, b) => sum + b.value, 0))]);
+  }
+  facts.push(["Typical bucket", fmt(mean)]);
+  facts.push(["Busiest", `${fmt(peak.value)} @ ${new Date(peak.start * 1000)
+    .toLocaleString([], { weekday: "short", hour: "2-digit", minute: "2-digit" })}`]);
+  facts.push(["Quietest", `${fmt(quiet.value)} @ ${new Date(quiet.start * 1000)
+    .toLocaleString([], { weekday: "short", hour: "2-digit", minute: "2-digit" })}`]);
+  facts.push(["Coverage", Math.round((data.coverage || 0) * 100) + "%"]);
+  if (data.anomalies_available === false) {
+    facts.push(["Unusual", "not judged yet"]);
+  } else {
+    facts.push(["Unusual", `${data.anomalies.length} of ${data.judged} judged`]);
+  }
+
+  host.innerHTML = '<div class="facts">' + facts.map(
+    ([k, v]) => `<div class="fact"><span>${esc(k)}</span><span>${esc(v)}</span></div>`
+  ).join("") + "</div>";
+}
+
 $("an-metric").addEventListener("change", loadAnalytics);
 $("an-since").addEventListener("change", loadAnalytics);
 
