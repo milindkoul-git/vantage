@@ -24,6 +24,13 @@ from vantage.dashboard.live import LiveFeed
 from vantage.storage.contracts import Query
 from vantage.storage.query_cli import parse_duration
 
+MAX_BUCKETS = 2000
+"""Ceiling on chart buckets in one analytics response.
+
+The same reasoning as MAX_LIMIT: a five-second interval over a year is six
+million points, and no browser is going to draw them.
+"""
+
 MAX_LIMIT = 500
 """Ceiling on any single response.
 
@@ -56,6 +63,7 @@ class DashboardApi:
             "observations": self.observations,
             "timeline": self.timeline,
             "stats": self.stats,
+            "analytics": self.analytics,
         }
         handler = handlers.get(route)
         if handler is None:
@@ -158,6 +166,95 @@ class DashboardApi:
                 for row in rows
             ],
         }
+
+    def analytics(self, params: dict[str, str]) -> dict[str, Any]:
+        """Bucketed history and anomalies, for the trend panel.
+
+        The dashboard drew no charts until Phase 11 existed, and the honest
+        reason is that there was nothing true to draw: a chart of the last
+        thirty seconds of frame rate is decoration. This returns the same
+        buckets ``vantage analytics`` prints, so the picture and the command
+        line cannot disagree.
+
+        Coverage travels with the answer. A chart of a week that only holds four
+        hours of data looks identical to a quiet week unless the page is told
+        which it is looking at.
+        """
+        from vantage.analytics.contracts import Metric
+        from vantage.analytics.engine import AnalyticsEngine, AnalyticsParams
+
+        if self._store is None:
+            return _no_store()
+
+        try:
+            metric = Metric(params.get("metric", "entities"))
+        except ValueError:
+            raise ValueError(
+                f"unknown metric {params.get('metric')!r}; "
+                f"available: {', '.join(m.value for m in Metric)}"
+            ) from None
+
+        span = parse_duration(params.get("since", "24h"))
+        interval = parse_duration(params.get("interval", "1h"))
+        if span <= 0 or interval <= 0:
+            raise ValueError("since and interval must be positive durations")
+        if span / interval > MAX_BUCKETS:
+            raise ValueError(
+                f"that window would produce more than {MAX_BUCKETS} buckets; "
+                "widen the interval or shorten the window"
+            )
+
+        until = time.time()
+        engine = AnalyticsEngine(self._store, params=AnalyticsParams(interval_s=interval))
+        series = engine.series(metric, since=until - span, until=until)
+
+        payload: dict[str, Any] = {
+            "available": True,
+            "metric": metric.value,
+            "label": metric.label,
+            "interval_s": series.interval_s,
+            "coverage": round(series.coverage, 4),
+            "buckets": [
+                {
+                    "start": b.start,
+                    "value": round(b.value, 4),
+                    "samples": b.samples,
+                    "known_zero": b.known_zero,
+                }
+                for b in series
+            ],
+            "anomalies": [],
+        }
+
+        # Anomalies need a baseline learned from history *before* the window,
+        # which a young database does not have. Absent is reported as absent
+        # rather than as an empty list meaning "all clear".
+        try:
+            result = engine.analyse(metric, since=until - span, until=until)
+        except Exception as exc:  # pragma: no cover - a store too young to judge
+            payload["anomalies_available"] = False
+            payload["anomalies_reason"] = str(exc)
+            return payload
+
+        payload["anomalies_available"] = result.judged > 0
+        payload["judged"] = result.judged
+        payload["unjudged"] = result.skipped_untrained
+        if result.judged == 0:
+            payload["anomalies_reason"] = (
+                "no slot has enough history behind it yet, so nothing was compared"
+            )
+        payload["anomalies"] = [
+            {
+                "start": a.bucket.start,
+                "observed": round(a.observed, 3),
+                "expected": round(a.expected, 3),
+                "direction": a.direction.value,
+                "score": round(a.score, 2),
+                "severity": a.severity,
+            }
+            for a in sorted(result.anomalies, key=lambda a: -a.score)[:50]
+        ]
+        return payload
 
     def stats(self, params: dict[str, str]) -> dict[str, Any]:
         payload: dict[str, Any] = {

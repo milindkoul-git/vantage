@@ -10,6 +10,8 @@ REM      webcam.bat pose       same, said explicitly
 REM      webcam.bat activity   pose plus activity recognition, tuned to demo
 REM      webcam.bat objects    365-class detection + tracking, no pose
 REM      webcam.bat plain      detection only, no tracking and no pose
+REM      webcam.bat watch      dashboard in the browser: live view, history,
+REM                            traffic charts and events. Recording is on.
 REM      webcam.bat identity   tracking plus face identification (opt-in)
 REM      webcam.bat enroll     add a person to the identity gallery
 REM      webcam.bat who        list who is enrolled
@@ -62,6 +64,11 @@ if /I "%~1"=="objects" (
 )
 if /I "%~1"=="plain" (
     set "MODE=plain"
+    shift
+    goto parse
+)
+if /I "%~1"=="watch" (
+    set "MODE=watch"
     shift
     goto parse
 )
@@ -122,6 +129,15 @@ if /I "%MODE%"=="identity" (
     set "MODE_INTERVAL=1"
     set "MODE_FLAGS=--track --identify"
 )
+if /I "%MODE%"=="watch" (
+    REM --store as well as --dashboard, because half the dashboard is history:
+    REM the traffic chart and the event list have nothing to draw from without
+    REM a database, and a chart that is empty because nothing was recorded looks
+    REM exactly like a chart that is empty because nothing happened.
+    set "MODE_MODEL=yolox-tiny"
+    set "MODE_INTERVAL=1"
+    set "MODE_FLAGS=--track --pose --dashboard --store"
+)
 
 if not defined VANTAGE_SOURCE   set "VANTAGE_SOURCE=webcam:0"
 if not defined VANTAGE_DEVICE   set "VANTAGE_DEVICE=gpu"
@@ -165,6 +181,14 @@ if /I "%MODE%"=="activity" (
     echo     sitting_down       - sit, with your KNEES in frame
     echo   Posture reads "unknown" unless your legs are visible; that is the
     echo   correct answer, not a fault, and the HUD prints the reason.
+)
+if /I "%MODE%"=="watch" (
+    echo.
+    echo   Opening http://localhost:8080 in your browser.
+    echo   The video window opens too; close either one to keep watching in
+    echo   the other. Press q in the video window to stop everything.
+    echo.
+    start "" "http://localhost:8080"
 )
 if /I "%MODE%"=="identity" (
     echo.

@@ -414,6 +414,20 @@ vantage dashboard --db vantage.db        # history only, no pipeline
 Each endpoint reports its own availability rather than returning empty data,
 which a viewer cannot tell apart from a quiet scene.
 
+**The dashboard, in one word.** `webcam.bat watch` starts the pipeline with
+recording on and opens the browser at it. Recording matters: half the dashboard
+is history, and a traffic chart with nothing in it because nothing was recorded
+looks exactly like one with nothing in it because nothing happened.
+
+What it shows: the live view with detection overlays, everyone currently in
+frame with their motion state, posture, activities and zones, a traffic chart
+over the stored history with anomalies marked, the event stream, and per-stage
+pipeline health. Clicking an entity opens its event history.
+
+Absence is drawn as absence throughout. An hour with no recorded data is a grey
+band on the chart, never a zero bar - a gap rendered as a zero is a chart
+claiming nobody was there when the truth is that nothing was watching.
+
 **Packaged two ways.** A wheel (342 KB, `pip install`) and a standalone
 directory bundle with `vantage.exe` (**408 MB**) that runs on a machine with no
 Python. Double-clicked with no arguments it starts the camera, serves the

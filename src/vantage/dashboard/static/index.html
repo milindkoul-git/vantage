@@ -1,288 +1,979 @@
 <!DOCTYPE html>
-<!--
-  The whole dashboard: markup, style and behaviour in one file.
-
-  No build step and no framework, which is not minimalism for its own sake. A
-  build step means a toolchain that has to be installed, kept current and
-  packaged into the executable; a framework means a dependency tree for a page
-  with four panels. Everything here is what a browser already does.
-
-  Live video arrives as MJPEG in a plain <img>, so the browser handles the
-  streaming and there is no WebSocket to keep alive or reconnect.
--->
-<html lang="en">
+<html lang="en" data-theme="dark">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Vantage</title>
+<!--
+  One self-contained file. No CDN, no build step, no external request of any
+  kind - not a font, not an icon, not a script. That is not minimalism for its
+  own sake: this page is served by a local http.server on a machine that may
+  have no internet at all, and an interface that degrades when the network is
+  down is the wrong interface for something watching a camera.
+
+  Charts are drawn on canvas rather than by a library, for the same reason.
+-->
 <style>
   :root {
-    --bg: #10131a; --panel: #171b25; --line: #232838;
-    --text: #e6e9f0; --dim: #8b93a7;
-    --info: #5b9bd5; --notice: #e0a458; --alert: #e05a5a; --ok: #5fc27e;
+    --ground:   #0B0F14;
+    --panel:    #121922;
+    --panel-2:  #18212C;
+    --line:     #243040;
+    --line-soft:#1B2531;
+    --text:     #E6EDF3;
+    --dim:      #8FA3B5;
+    --faint:    #61748A;
+    --accent:   #35D0BA;
+    --accent-dk:#0E8C7D;
+    --info:     #6FA8FF;
+    --warn:     #E8B44A;
+    --crit:     #FF6B6B;
+    --shadow:   0 1px 2px rgba(0,0,0,.4), 0 12px 32px -20px rgba(0,0,0,.9);
+
+    --ui: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    --mono: ui-monospace, "Cascadia Mono", "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+    --r: 8px;
   }
+
+  :root[data-theme="light"] {
+    --ground:   #EEF2F5;
+    --panel:    #FFFFFF;
+    --panel-2:  #F5F8FA;
+    --line:     #D7E0E7;
+    --line-soft:#E6ECF1;
+    --text:     #0F1720;
+    --dim:      #5A6B7C;
+    --faint:    #8497A8;
+    --accent:   #0E8C7D;
+    --accent-dk:#0B6E63;
+    --info:     #2C6FD1;
+    --warn:     #9A6B12;
+    --crit:     #C8372F;
+    --shadow:   0 1px 2px rgba(16,24,32,.06), 0 12px 28px -22px rgba(16,24,32,.4);
+  }
+
   * { box-sizing: border-box; }
+
+  html, body { height: 100%; }
+
   body {
-    margin: 0; background: var(--bg); color: var(--text);
-    font: 14px/1.5 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+    margin: 0;
+    background: var(--ground);
+    color: var(--text);
+    font-family: var(--ui);
+    font-size: 14px;
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
   }
+
+  /* ---- top bar ------------------------------------------------------ */
+
   header {
-    display: flex; align-items: baseline; gap: 16px;
-    padding: 12px 20px; border-bottom: 1px solid var(--line); background: var(--panel);
-  }
-  header h1 { font-size: 16px; margin: 0; font-weight: 600; letter-spacing: .02em; }
-  header .meta { color: var(--dim); font-size: 12px; }
-  #status { margin-left: auto; font-size: 12px; color: var(--dim); }
-  #status.live { color: var(--ok); }
-  #status.stale { color: var(--notice); }
-
-  main {
-    display: grid; gap: 16px; padding: 16px;
-    grid-template-columns: minmax(320px, 2fr) minmax(280px, 1fr);
-  }
-  @media (max-width: 900px) { main { grid-template-columns: 1fr; } }
-
-  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; }
-  .panel h2 {
-    margin: 0; padding: 10px 14px; font-size: 12px; font-weight: 600;
-    text-transform: uppercase; letter-spacing: .08em; color: var(--dim);
+    position: sticky;
+    top: 0;
+    z-index: 20;
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    padding: 10px 18px;
+    background: color-mix(in srgb, var(--ground) 88%, transparent);
+    backdrop-filter: blur(8px);
     border-bottom: 1px solid var(--line);
   }
-  .panel .body { padding: 12px 14px; }
-  .panel .body.flush { padding: 0; }
 
-  #view { width: 100%; display: block; background: #000; border-radius: 0 0 8px 8px; }
-  #noview { padding: 40px 14px; text-align: center; color: var(--dim); }
-
-  table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
-  th {
-    text-align: left; font-weight: 500; font-size: 11px; color: var(--dim);
-    text-transform: uppercase; letter-spacing: .06em;
-    padding: 8px 14px; border-bottom: 1px solid var(--line);
+  .brand {
+    font-weight: 700;
+    letter-spacing: .16em;
+    font-size: 13px;
+    text-transform: uppercase;
   }
-  td { padding: 7px 14px; border-bottom: 1px solid var(--line); vertical-align: top; }
-  tr:last-child td { border-bottom: none; }
-  .time { color: var(--dim); white-space: nowrap; }
-  .sev { font-size: 11px; font-weight: 600; text-transform: uppercase; white-space: nowrap; }
-  .sev.info { color: var(--info); }
-  .sev.notice { color: var(--notice); }
-  .sev.alert { color: var(--alert); }
-  .entity { color: var(--dim); }
-  .empty { padding: 24px 14px; color: var(--dim); text-align: center; }
+  .brand span { color: var(--accent); }
 
-  .controls { display: flex; gap: 8px; flex-wrap: wrap; padding: 10px 14px; border-bottom: 1px solid var(--line); }
-  select, button {
-    background: #10131a; color: var(--text); border: 1px solid var(--line);
-    border-radius: 5px; padding: 5px 9px; font: inherit; font-size: 12px;
+  .spacer { flex: 1; }
+
+  .pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    font-family: var(--mono);
+    font-size: 11.5px;
+    padding: 4px 10px;
+    border-radius: 999px;
+    border: 1px solid var(--line);
+    background: var(--panel);
+    color: var(--dim);
+    white-space: nowrap;
   }
-  button { cursor: pointer; }
-  button:hover { border-color: #38405a; }
+  .pill b { color: var(--text); font-weight: 600; }
 
-  .pill { display: inline-block; padding: 1px 7px; border-radius: 999px;
-          background: #10131a; border: 1px solid var(--line); font-size: 11px; color: var(--dim); }
-  .warn { color: var(--notice); }
-  footer { padding: 10px 20px 24px; color: var(--dim); font-size: 11px; }
+  .dot {
+    width: 7px; height: 7px; border-radius: 50%;
+    background: var(--faint);
+    flex: none;
+  }
+  .pill.live .dot { background: var(--accent); animation: pulse 2s ease-in-out infinite; }
+  .pill.live { border-color: color-mix(in srgb, var(--accent) 40%, var(--line)); }
+  .pill.stale .dot { background: var(--warn); }
+  .pill.down  .dot { background: var(--crit); }
+
+  @keyframes pulse { 0%,100% { opacity: 1 } 50% { opacity: .35 } }
+  @media (prefers-reduced-motion: reduce) {
+    .pill.live .dot { animation: none; }
+    * { transition: none !important; }
+  }
+
+  button.ghost {
+    font: inherit;
+    font-size: 12px;
+    color: var(--dim);
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    padding: 4px 10px;
+    cursor: pointer;
+  }
+  button.ghost:hover { color: var(--text); border-color: var(--accent-dk); }
+  button.ghost:focus-visible,
+  select:focus-visible,
+  .entity:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+  /* ---- layout ------------------------------------------------------- */
+
+  main {
+    padding: 16px 18px 40px;
+    display: grid;
+    gap: 14px;
+    max-width: 1680px;
+    margin: 0 auto;
+  }
+
+  .row-main {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 340px;
+    gap: 14px;
+    align-items: start;
+  }
+
+  @media (max-width: 1080px) {
+    .row-main { grid-template-columns: minmax(0, 1fr); }
+  }
+
+  .card {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: var(--r);
+    box-shadow: var(--shadow);
+    overflow: hidden;
+  }
+
+  .card > h2 {
+    margin: 0;
+    padding: 10px 14px;
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: .12em;
+    text-transform: uppercase;
+    color: var(--faint);
+    border-bottom: 1px solid var(--line-soft);
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  .card > h2 .spacer { flex: 1; }
+  .card .pad { padding: 12px 14px; }
+
+  /* ---- video -------------------------------------------------------- */
+
+  .stage {
+    position: relative;
+    background: #000;
+    aspect-ratio: 4 / 3;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .stage img { width: 100%; height: 100%; object-fit: contain; display: block; }
+
+  .placeholder {
+    color: var(--faint);
+    font-size: 13px;
+    text-align: center;
+    padding: 24px;
+    max-width: 42ch;
+    line-height: 1.6;
+  }
+  .placeholder code {
+    font-family: var(--mono);
+    font-size: 12px;
+    color: var(--accent);
+    background: rgba(53,208,186,.08);
+    padding: 2px 6px;
+    border-radius: 4px;
+  }
+
+  .overlay {
+    position: absolute;
+    left: 10px; bottom: 10px;
+    display: flex; gap: 6px; flex-wrap: wrap;
+    pointer-events: none;
+  }
+  .overlay .pill {
+    background: rgba(0,0,0,.62);
+    border-color: rgba(255,255,255,.14);
+    color: #DCE6EE;
+    backdrop-filter: blur(4px);
+  }
+  .overlay .pill b { color: #fff; }
+
+  /* ---- kpis --------------------------------------------------------- */
+
+  .kpis {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+    gap: 1px;
+    background: var(--line-soft);
+  }
+  .kpi { background: var(--panel); padding: 11px 14px; }
+  .kpi dt {
+    font-size: 10.5px;
+    letter-spacing: .1em;
+    text-transform: uppercase;
+    color: var(--faint);
+    margin-bottom: 3px;
+  }
+  .kpi dd {
+    margin: 0;
+    font-family: var(--mono);
+    font-size: 19px;
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+    letter-spacing: -.01em;
+  }
+  .kpi dd small { font-size: 11px; color: var(--dim); font-weight: 400; margin-left: 3px; }
+  .kpi.alert dd { color: var(--crit); }
+  .kpi.warn dd  { color: var(--warn); }
+
+  /* ---- entities ----------------------------------------------------- */
+
+  #entities { display: flex; flex-direction: column; gap: 1px; background: var(--line-soft); }
+
+  .entity {
+    background: var(--panel);
+    padding: 10px 14px;
+    display: grid;
+    grid-template-columns: auto 1fr;
+    gap: 2px 10px;
+    cursor: pointer;
+    border: none;
+    text-align: left;
+    color: inherit;
+    font: inherit;
+    width: 100%;
+  }
+  .entity:hover { background: var(--panel-2); }
+
+  .entity .who {
+    font-family: var(--mono);
+    font-size: 12.5px;
+    font-weight: 600;
+    grid-column: 1;
+  }
+  .entity .name { color: var(--accent); }
+  .entity .tag {
+    grid-column: 2;
+    justify-self: end;
+    font-size: 10.5px;
+    text-transform: uppercase;
+    letter-spacing: .08em;
+    color: var(--faint);
+  }
+  .entity .doing {
+    grid-column: 1 / -1;
+    font-size: 12px;
+    color: var(--dim);
+    display: flex;
+    flex-wrap: wrap;
+    gap: 5px;
+    align-items: center;
+  }
+  .chip {
+    font-size: 10.5px;
+    padding: 1px 7px;
+    border-radius: 999px;
+    border: 1px solid var(--line);
+    background: var(--panel-2);
+    color: var(--dim);
+    white-space: nowrap;
+  }
+  .chip.moving { color: var(--accent); border-color: var(--accent-dk); }
+  .chip.zone   { color: var(--info); border-color: color-mix(in srgb, var(--info) 35%, var(--line)); }
+  .chip.act    { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 35%, var(--line)); }
+
+  .empty {
+    padding: 22px 14px;
+    color: var(--faint);
+    font-size: 12.5px;
+    text-align: center;
+  }
+
+  /* ---- charts ------------------------------------------------------- */
+
+  .chartwrap { position: relative; padding: 10px 6px 4px; }
+  canvas { display: block; width: 100%; height: 150px; }
+
+  .legend {
+    display: flex; gap: 14px; flex-wrap: wrap;
+    padding: 0 14px 11px;
+    font-size: 11.5px;
+    color: var(--dim);
+  }
+  .legend i {
+    display: inline-block; width: 9px; height: 9px; border-radius: 2px;
+    margin-right: 5px; vertical-align: -1px;
+  }
+
+  .note {
+    padding: 9px 14px 12px;
+    font-size: 12px;
+    color: var(--faint);
+    border-top: 1px solid var(--line-soft);
+  }
+  .note.warn { color: var(--warn); }
+
+  /* ---- events ------------------------------------------------------- */
+
+  select {
+    font: inherit; font-size: 12px;
+    background: var(--panel-2);
+    color: var(--text);
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    padding: 3px 7px;
+  }
+
+  .events { display: flex; flex-direction: column; gap: 1px; background: var(--line-soft); }
+  .ev {
+    background: var(--panel);
+    padding: 9px 14px;
+    display: grid;
+    grid-template-columns: 62px 4px 1fr auto;
+    gap: 10px;
+    align-items: baseline;
+    font-size: 13px;
+  }
+  .ev time { font-family: var(--mono); font-size: 11.5px; color: var(--faint); }
+  .ev .bar { align-self: stretch; border-radius: 2px; background: var(--faint); }
+  /* info / notice / alert are the three the event engine actually emits.
+     This styled info / warning / critical - names that look right and are not
+     the ones in Severity - so every notice and every alert rendered with the
+     same grey bar as an unknown value, and the severity filter offered two
+     options that could never match anything. */
+  .ev.info   .bar { background: var(--info); }
+  .ev.notice .bar { background: var(--warn); }
+  .ev.alert  .bar { background: var(--crit); }
+  .ev.alert  { background: color-mix(in srgb, var(--crit) 7%, var(--panel)); }
+  .ev .rule { font-family: var(--mono); font-size: 11px; color: var(--faint); white-space: nowrap; }
+
+  /* ---- drawer ------------------------------------------------------- */
+
+  .drawer {
+    position: fixed; inset: 0;
+    background: rgba(0,0,0,.55);
+    display: none;
+    align-items: center;
+    justify-content: center;
+    padding: 20px;
+    z-index: 40;
+  }
+  .drawer[open] { display: flex; }
+  .drawer .card { max-width: 620px; width: 100%; max-height: 80vh; overflow: auto; }
+
+  .footer {
+    color: var(--faint);
+    font-size: 11.5px;
+    font-family: var(--mono);
+    text-align: center;
+    padding-top: 4px;
+  }
 </style>
 </head>
 <body>
+
 <header>
-  <h1>Vantage</h1>
-  <span class="meta" id="camera">-</span>
-  <span class="meta" id="store">-</span>
-  <span id="status">connecting</span>
+  <div class="brand">Van<span>tage</span></div>
+  <span class="pill" id="p-status"><i class="dot"></i><span id="status-text">connecting</span></span>
+  <span class="pill" id="p-cam"><span id="cam">-</span></span>
+  <div class="spacer"></div>
+  <span class="pill" id="p-uptime">up <b id="uptime">-</b></span>
+  <button class="ghost" id="theme" title="Switch light and dark">Light</button>
 </header>
 
 <main>
-  <section class="panel">
-    <h2>Live</h2>
-    <div class="body flush">
-      <img id="view" alt="Live view" hidden>
-      <div id="noview">No live feed. Start one with <code>vantage run --dashboard</code>.</div>
+
+  <div class="row-main">
+    <div style="display:grid; gap:14px; min-width:0">
+      <section class="card">
+        <div class="stage">
+          <img id="view" alt="Live camera view with detection overlays" hidden>
+          <div class="placeholder" id="noview">
+            Waiting for the first frame.<br><br>
+            If this does not change, no pipeline is attached to this dashboard.
+            Start one with <code>vantage run --dashboard</code>.
+          </div>
+          <div class="overlay" id="overlay" hidden>
+            <span class="pill"><b id="ov-fps">-</b> fps</span>
+            <span class="pill">frame <b id="ov-frame">-</b></span>
+            <span class="pill" id="ov-drop-wrap" hidden><b id="ov-drop">0</b> dropped</span>
+          </div>
+        </div>
+        <dl class="kpis" id="kpis">
+          <div class="kpi"><dt>In frame</dt><dd id="k-entities">-</dd></div>
+          <div class="kpi"><dt>Moving</dt><dd id="k-moving">-</dd></div>
+          <div class="kpi"><dt>Frame age</dt><dd id="k-age">-<small>s</small></dd></div>
+          <div class="kpi"><dt>Events stored</dt><dd id="k-events">-</dd></div>
+          <div class="kpi"><dt>Observations</dt><dd id="k-obs">-</dd></div>
+          <div class="kpi"><dt>Stages</dt><dd id="k-health">-</dd></div>
+        </dl>
+      </section>
+
+      <section class="card">
+        <h2>
+          Traffic
+          <div class="spacer"></div>
+          <select id="an-metric" aria-label="Metric">
+            <option value="entities">Distinct entities</option>
+            <option value="events">Events</option>
+            <option value="moving_fraction">Fraction moving</option>
+            <option value="mean_speed">Mean speed</option>
+          </select>
+          <select id="an-since" aria-label="Window">
+            <option value="12h">12 hours</option>
+            <option value="24h" selected>24 hours</option>
+            <option value="3d">3 days</option>
+            <option value="7d">7 days</option>
+          </select>
+        </h2>
+        <div class="chartwrap"><canvas id="chart" role="img" aria-label="Traffic over time"></canvas></div>
+        <div class="legend">
+          <span><i style="background:var(--accent-dk)"></i>observed</span>
+          <span><i style="background:var(--crit)"></i>above baseline</span>
+          <span><i style="background:var(--info)"></i>below baseline</span>
+          <span><i style="background:var(--line)"></i>no data recorded</span>
+        </div>
+        <div class="note" id="an-note">loading</div>
+      </section>
     </div>
+
+    <div style="display:grid; gap:14px; min-width:0">
+      <section class="card">
+        <h2>In frame now <div class="spacer"></div><span class="pill" id="ent-count">0</span></h2>
+        <div id="entities"><div class="empty">nothing tracked</div></div>
+      </section>
+
+      <section class="card">
+        <h2>Pipeline</h2>
+        <div id="health" class="pad" style="font-size:12.5px;color:var(--dim)">-</div>
+      </section>
+    </div>
+  </div>
+
+  <section class="card">
+    <h2>
+      Events
+      <div class="spacer"></div>
+      <select id="ev-since" aria-label="Window">
+        <option value="">Live</option>
+        <option value="1h">Last hour</option>
+        <option value="24h">Last 24 hours</option>
+        <option value="7d">Last 7 days</option>
+      </select>
+      <select id="ev-sev" aria-label="Severity">
+        <option value="">All severities</option>
+        <option value="info">Info</option>
+        <option value="notice">Notice</option>
+        <option value="alert">Alert</option>
+      </select>
+      <span class="pill" id="ev-count">-</span>
+    </h2>
+    <div class="events" id="events"><div class="empty">loading</div></div>
   </section>
 
-  <section class="panel">
-    <h2>Entities now</h2>
-    <div class="body flush"><div id="entities" class="empty">nothing tracked</div></div>
-  </section>
-
-  <section class="panel" style="grid-column: 1 / -1;">
-    <h2>Events</h2>
-    <div class="controls">
-      <select id="since">
-        <option value="">live only</option>
-        <option value="15m">last 15m</option>
-        <option value="1h" selected>last hour</option>
-        <option value="6h">last 6h</option>
-        <option value="24h">last 24h</option>
-        <option value="7d">last 7d</option>
-      </select>
-      <select id="severity">
-        <option value="">all severities</option>
-        <option value="alert">alerts only</option>
-        <option value="notice">notice and above</option>
-      </select>
-      <button id="refresh">Refresh</button>
-      <span class="pill" id="eventcount">-</span>
-    </div>
-    <div class="body flush"><div id="events" class="empty">loading</div></div>
-  </section>
+  <div class="footer" id="foot">vantage dashboard &middot; read-only &middot; no authentication</div>
 </main>
 
-<footer>
-  Local dashboard, no authentication. Bound to loopback unless started with
-  <code>--dashboard-host</code>.
-</footer>
+<div class="drawer" id="drawer" role="dialog" aria-modal="true" aria-labelledby="drawer-title">
+  <section class="card">
+    <h2 id="drawer-title">Entity history<div class="spacer"></div><button class="ghost" id="drawer-close">Close</button></h2>
+    <div id="drawer-body" class="pad">loading</div>
+  </section>
+</div>
 
 <script>
 "use strict";
 
 const $ = (id) => document.getElementById(id);
-const clock = (ts) => new Date(ts * 1000).toLocaleTimeString();
 
-// Polling rather than WebSockets. The live *picture* is already pushed by MJPEG,
-// so this only carries a small JSON snapshot; a socket would add reconnect
-// handling and a second transport to earn a second of latency nobody notices.
-const LIVE_MS = 1000;
-const HISTORY_MS = 10000;
-
-async function getJSON(url) {
-  const response = await fetch(url, { cache: "no-store" });
-  if (!response.ok) throw new Error(`${response.status} ${response.statusText}`);
-  return response.json();
-}
-
-function setStatus(text, kind) {
-  const el = $("status");
-  el.textContent = text;
-  el.className = kind || "";
-}
-
-function renderEntities(entities) {
-  const host = $("entities");
-  if (!entities || entities.length === 0) {
-    host.className = "empty";
-    host.textContent = "nothing tracked";
-    return;
-  }
-  host.className = "";
-  // The Who column appears only when identity is running and has committed to
-  // at least one name. A column of dashes on every deployment that leaves
-  // identity off - which is the default - would suggest the feature is broken
-  // rather than absent.
-  const named = entities.some((e) => e.identity);
-  const rows = entities.map((e) => `
-    <tr>
-      <td>${escapeHtml(e.entity_id)}</td>
-      ${named ? `<td class="entity">${escapeHtml(e.identity || "—")}</td>` : ""}
-      <td class="entity">${escapeHtml(e.label || "")}</td>
-      <td>${escapeHtml([e.motion, e.posture, (e.activities || []).join(", ")]
-            .filter(Boolean).join(" &middot; "))}</td>
-      <td class="entity">${escapeHtml((e.zones || []).join(", "))}</td>
-    </tr>`).join("");
-  host.innerHTML = `<table><thead><tr>
-      <th>Entity</th>${named ? "<th>Who</th>" : ""}<th>Type</th><th>Doing</th><th>Where</th>
-    </tr></thead><tbody>${rows}</tbody></table>`;
-}
-
-function renderEvents(events, note) {
-  const host = $("events");
-  if (!events || events.length === 0) {
-    host.className = "empty";
-    host.textContent = note || "no events";
-    return;
-  }
-  host.className = "";
-  const rows = events.map((e) => `
-    <tr>
-      <td class="time">${clock(e.timestamp)}</td>
-      <td class="sev ${escapeHtml(e.severity)}">${escapeHtml(e.severity)}</td>
-      <td>${escapeHtml(e.summary)}</td>
-      <td class="entity">${escapeHtml(e.zone || "")}</td>
-      <td class="entity">${escapeHtml(e.rule)}</td>
-    </tr>`).join("");
-  host.innerHTML = `<table><thead><tr>
-      <th>Time</th><th>Severity</th><th>What</th><th>Zone</th><th>Rule</th>
-    </tr></thead><tbody>${rows}</tbody></table>`;
-}
-
-function escapeHtml(value) {
-  // Entity ids and zone names come from configuration and from model labels.
-  // Neither is attacker-controlled in a normal deployment, but they are still
-  // data being put into markup, and escaping data is not conditional on who
-  // wrote it.
+/* Data from the pipeline is escaped before it reaches markup. Entity ids and
+   zone names come from configuration and model labels rather than from an
+   attacker, but escaping data is not conditional on who wrote it. */
+function esc(value) {
   return String(value ?? "").replace(/[&<>"']/g, (c) => ({
     "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
   })[c]);
+}
+
+const clock = (ts) => new Date(ts * 1000).toLocaleTimeString();
+const day = (ts) => new Date(ts * 1000).toLocaleString([], {
+  weekday: "short", hour: "2-digit", minute: "2-digit",
+});
+
+function duration(seconds) {
+  if (seconds == null) return "-";
+  const s = Math.floor(seconds);
+  if (s < 60) return s + "s";
+  if (s < 3600) return Math.floor(s / 60) + "m";
+  if (s < 86400) return Math.floor(s / 3600) + "h " + Math.floor((s % 3600) / 60) + "m";
+  return Math.floor(s / 86400) + "d " + Math.floor((s % 86400) / 3600) + "h";
+}
+
+const compact = (n) =>
+  n >= 1e6 ? (n / 1e6).toFixed(1) + "M" : n >= 1e4 ? (n / 1e3).toFixed(0) + "k" : String(n);
+
+async function getJSON(url) {
+  const response = await fetch(url, { cache: "no-store" });
+  if (!response.ok) throw new Error(url + " -> " + response.status);
+  return response.json();
+}
+
+/* ---- theme ---------------------------------------------------------- */
+
+const root = document.documentElement;
+function applyTheme(name) {
+  root.setAttribute("data-theme", name);
+  $("theme").textContent = name === "dark" ? "Light" : "Dark";
+  try { localStorage.setItem("vantage-theme", name); } catch (err) { /* private mode */ }
+  drawChart();
+}
+$("theme").addEventListener("click", () =>
+  applyTheme(root.getAttribute("data-theme") === "dark" ? "light" : "dark"));
+(function initTheme() {
+  let saved = null;
+  try { saved = localStorage.getItem("vantage-theme"); } catch (err) { /* ignore */ }
+  if (!saved) {
+    saved = window.matchMedia && window.matchMedia("(prefers-color-scheme: light)").matches
+      ? "light" : "dark";
+  }
+  applyTheme(saved);
+})();
+
+/* ---- status --------------------------------------------------------- */
+
+function setStatus(text, kind) {
+  $("status-text").textContent = text;
+  $("p-status").className = "pill " + (kind || "");
+}
+
+/* ---- live ----------------------------------------------------------- */
+
+let started = false;
+
+function renderEntities(entities) {
+  const host = $("entities");
+  $("ent-count").textContent = entities.length;
+
+  if (!entities.length) {
+    host.innerHTML = '<div class="empty">nothing tracked</div>';
+    return;
+  }
+
+  host.innerHTML = entities.map((e) => {
+    const chips = [];
+    if (e.motion) {
+      chips.push(`<span class="chip ${e.motion === "moving" ? "moving" : ""}">${esc(e.motion)}`
+        + (e.motion === "moving" && e.speed ? ` ${e.speed.toFixed(2)} h/s` : "") + "</span>");
+    }
+    if (e.posture && e.posture !== "unknown") chips.push(`<span class="chip">${esc(e.posture)}</span>`);
+    (e.activities || []).forEach((a) => chips.push(`<span class="chip act">${esc(a)}</span>`));
+    (e.zones || []).forEach((z) => chips.push(`<span class="chip zone">${esc(z)}</span>`));
+    if (!chips.length) chips.push('<span class="chip">no state yet</span>');
+
+    /* A name is shown only when identity committed to one. Anything less would
+       be indistinguishable here from a decided answer, which is exactly what
+       the vote threshold exists to prevent. */
+    const who = e.identity
+      ? `<span class="name">${esc(e.identity)}</span>`
+      : esc(e.entity_id);
+
+    return `<button class="entity" data-entity="${esc(e.entity_id)}">
+      <span class="who">${who}</span>
+      <span class="tag">${esc(e.label || "")}</span>
+      <span class="doing">${chips.join("")}</span>
+    </button>`;
+  }).join("");
+}
+
+function renderHealth(health, stats) {
+  const names = Object.keys(health || {});
+  if (!names.length) {
+    $("health").innerHTML = '<span style="color:var(--faint)">no stage telemetry</span>';
+    $("k-health").textContent = "-";
+    return;
+  }
+  let degraded = 0;
+  const rows = names.map((name) => {
+    const stage = health[name] || {};
+    const failures = stage.failures || 0;
+    /* The key is `disabled`, which is what StageRegistry actually publishes.
+       This read `broken || circuit_open` - two fields that do not exist - so a
+       stage whose circuit had opened was reported as ok, in the one panel whose
+       entire job is to say when something has stopped. */
+    const off = stage.disabled === true;
+    if (failures || off) degraded++;
+    const colour = off ? "var(--crit)" : failures ? "var(--warn)" : "var(--accent)";
+    const detail = off
+      ? "stopped"
+      : failures
+        ? `${failures} failed of ${stage.calls ?? "?"}`
+        : "ok";
+    const why = (off || failures) && stage.last_error ? stage.last_error : "";
+    return `<div style="padding:3px 0" title="${esc(why)}">
+      <div style="display:flex;gap:8px;align-items:baseline">
+        <span class="dot" style="background:${colour}"></span>
+        <span style="font-family:var(--mono);font-size:11.5px">${esc(name)}</span>
+        <span style="flex:1"></span>
+        <span style="font-size:11.5px;color:${colour}">${esc(detail)}</span>
+      </div>
+      ${why ? `<div style="font-size:11px;color:var(--faint);margin-left:15px;overflow:hidden;
+        text-overflow:ellipsis;white-space:nowrap">${esc(why)}</div>` : ""}
+    </div>`;
+  });
+  $("health").innerHTML = rows.join("");
+  $("k-health").textContent = degraded ? `${names.length - degraded}/${names.length}` : names.length;
+  $("kpis").querySelector("#k-health").parentElement.className = degraded ? "kpi alert" : "kpi";
 }
 
 async function pollLive() {
   try {
     const live = await getJSON("/api/live");
     if (!live.available) {
-      setStatus(live.reason || "history only", "");
+      setStatus(live.reason ? "history only" : "no pipeline", "down");
+      $("noview").innerHTML = esc(live.reason || "No live pipeline attached.");
       renderEntities([]);
       return;
     }
-    if (live.has_frame && $("view").hidden) {
-      // Started only once a frame exists, so a browser does not sit on a
-      // stalled stream showing a broken image.
+
+    if (live.has_frame && !started) {
+      started = true;
       $("view").src = "/stream.mjpg";
       $("view").hidden = false;
       $("noview").hidden = true;
+      $("overlay").hidden = false;
     }
+
     const stale = live.age_s > 3;
-    setStatus(stale ? `stale ${live.age_s.toFixed(0)}s` : `live · frame ${live.frame_index}`,
-              stale ? "stale" : "live");
-    renderEntities(live.entities);
-    if ($("since").value === "") renderEvents(live.events, "no events yet");
+    setStatus(stale ? `stale ${live.age_s.toFixed(0)}s` : "live", stale ? "stale" : "live");
+
+    const stats = live.stats || {};
+    $("ov-fps").textContent = (stats.fps ?? 0).toFixed ? stats.fps.toFixed(1) : stats.fps;
+    $("ov-frame").textContent = live.frame_index;
+    if (stats.dropped) {
+      $("ov-drop-wrap").hidden = false;
+      $("ov-drop").textContent = stats.dropped;
+    }
+    if (stats.source) $("cam").textContent = stats.source;
+
+    const entities = live.entities || [];
+    renderEntities(entities);
+    $("k-entities").textContent = entities.length;
+    $("k-moving").textContent = entities.filter((e) => e.motion === "moving").length;
+    $("k-age").innerHTML = live.age_s.toFixed(1) + "<small>s</small>";
+    $("kpis").querySelector("#k-age").parentElement.className = stale ? "kpi warn" : "kpi";
+
+    renderHealth(live.health, stats);
+
+    if ($("ev-since").value === "") renderEvents(live.events || [], "no events yet");
   } catch (err) {
-    setStatus("disconnected", "stale");
+    setStatus("disconnected", "down");
   }
 }
 
-async function loadHistory() {
-  const since = $("since").value;
-  if (since === "") { $("eventcount").textContent = "live"; return; }
+/* ---- events --------------------------------------------------------- */
+
+function renderEvents(events, emptyNote) {
+  const host = $("events");
+  if (!events || !events.length) {
+    host.innerHTML = `<div class="empty">${esc(emptyNote || "no events")}</div>`;
+    $("ev-count").textContent = "0";
+    return;
+  }
+  $("ev-count").textContent = events.length;
+  host.innerHTML = events.map((e) => `
+    <div class="ev ${esc(e.severity)}">
+      <time>${clock(e.timestamp)}</time>
+      <span class="bar"></span>
+      <span>${esc(e.summary)}${e.zone ? ` <span class="chip zone">${esc(e.zone)}</span>` : ""}</span>
+      <span class="rule">${esc(e.rule)}</span>
+    </div>`).join("");
+}
+
+async function loadEvents() {
+  const since = $("ev-since").value;
+  if (since === "") { $("ev-count").textContent = "live"; return; }
+  const severity = $("ev-sev").value;
+  const query = `/api/events?since=${encodeURIComponent(since)}&limit=200`
+    + (severity ? `&severity=${encodeURIComponent(severity)}` : "");
   try {
-    const params = new URLSearchParams({ since, limit: "100" });
-    if ($("severity").value) params.set("severity", $("severity").value);
-    const data = await getJSON(`/api/events?${params}`);
+    const data = await getJSON(query);
     if (!data.available) {
-      renderEvents([], data.reason);
-      $("eventcount").textContent = "no store";
+      renderEvents([], data.reason || "no store attached; start the run with --store");
       return;
     }
-    renderEvents(data.events, "nothing recorded in this window");
-    $("eventcount").textContent = `${data.count} shown`;
+    renderEvents(data.events, "nothing matched that window");
   } catch (err) {
-    renderEvents([], `could not load history: ${err.message}`);
+    renderEvents([], "could not load events");
   }
 }
+$("ev-since").addEventListener("change", loadEvents);
+$("ev-sev").addEventListener("change", loadEvents);
+
+/* ---- chart ---------------------------------------------------------- */
+
+let chartData = null;
+
+function css(name) {
+  return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+}
+
+/* Drawn by hand on canvas. A charting library would be the single largest
+   dependency in the project, for one panel, on a page that must work with no
+   network at all. */
+function drawChart() {
+  const canvas = $("chart");
+  const wrap = canvas.parentElement;
+  const ratio = window.devicePixelRatio || 1;
+  const width = wrap.clientWidth - 12;
+  const height = 150;
+  if (width <= 0) return;
+
+  canvas.width = width * ratio;
+  canvas.height = height * ratio;
+  canvas.style.height = height + "px";
+  const ctx = canvas.getContext("2d");
+  ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
+  ctx.clearRect(0, 0, width, height);
+
+  if (!chartData || !chartData.buckets || !chartData.buckets.length) return;
+
+  const buckets = chartData.buckets;
+  const flagged = new Map();
+  (chartData.anomalies || []).forEach((a) => flagged.set(a.start, a));
+
+  const padL = 34, padR = 6, padT = 10, padB = 18;
+  const plotW = width - padL - padR;
+  const plotH = height - padT - padB;
+  const peak = Math.max(1e-9, ...buckets.map((b) => b.value));
+  const isFraction = chartData.metric === "moving_fraction";
+  const top = isFraction ? Math.max(peak, 1) : peak * 1.12;
+
+  const lineColour = css("--line");
+  const faint = css("--faint");
+  const accent = css("--accent-dk");
+  const crit = css("--crit");
+  const info = css("--info");
+
+  // Grid and axis labels: three lines is enough to read a level from.
+  ctx.strokeStyle = lineColour;
+  ctx.fillStyle = faint;
+  ctx.lineWidth = 1;
+  ctx.font = "10px " + css("--mono");
+  ctx.textAlign = "right";
+  ctx.textBaseline = "middle";
+  for (let i = 0; i <= 2; i++) {
+    const value = (top / 2) * i;
+    const y = Math.round(padT + plotH - (value / top) * plotH) + 0.5;
+    ctx.beginPath();
+    ctx.moveTo(padL, y);
+    ctx.lineTo(width - padR, y);
+    ctx.stroke();
+    ctx.fillText(isFraction ? Math.round(value * 100) + "%" : compact(Math.round(value)), padL - 6, y);
+  }
+
+  const slot = plotW / buckets.length;
+  const barW = Math.max(1, Math.min(slot - 1, 22));
+
+  buckets.forEach((bucket, index) => {
+    const x = padL + index * slot + (slot - barW) / 2;
+    const anomaly = flagged.get(bucket.start);
+    const noData = bucket.samples === 0 && !bucket.known_zero;
+
+    if (noData) {
+      // Absence is drawn as absence: a faint full-height band, never as a zero.
+      // A gap rendered as a zero bar is a chart claiming nobody was there when
+      // the truth is that nothing was watching.
+      ctx.fillStyle = lineColour;
+      ctx.globalAlpha = 0.5;
+      ctx.fillRect(x, padT, barW, plotH);
+      ctx.globalAlpha = 1;
+      return;
+    }
+
+    const h = Math.max(bucket.value > 0 ? 1.5 : 0, (bucket.value / top) * plotH);
+    ctx.fillStyle = anomaly
+      ? (anomaly.direction === "above" ? crit : info)
+      : accent;
+    ctx.fillRect(x, padT + plotH - h, barW, h);
+
+    if (anomaly) {
+      ctx.beginPath();
+      ctx.arc(x + barW / 2, padT + plotH - h - 5, 2.5, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  });
+
+  // Time labels at the ends only; anything denser collides at this width.
+  ctx.fillStyle = faint;
+  ctx.textBaseline = "top";
+  ctx.textAlign = "left";
+  ctx.fillText(day(buckets[0].start), padL, height - padB + 4);
+  ctx.textAlign = "right";
+  ctx.fillText(day(buckets[buckets.length - 1].start), width - padR, height - padB + 4);
+}
+
+async function loadAnalytics() {
+  const metric = $("an-metric").value;
+  const since = $("an-since").value;
+  const interval = (since === "7d" || since === "3d") ? "1h" : "15m";
+  try {
+    const data = await getJSON(
+      `/api/analytics?metric=${encodeURIComponent(metric)}`
+      + `&since=${encodeURIComponent(since)}&interval=${interval}`);
+
+    if (!data.available) {
+      chartData = null;
+      drawChart();
+      $("an-note").className = "note";
+      $("an-note").textContent = data.reason
+        || "No store attached. Start the run with --store to record history.";
+      return;
+    }
+
+    chartData = data;
+    drawChart();
+
+    const parts = [];
+    const coverage = Math.round((data.coverage || 0) * 100);
+    parts.push(`${data.buckets.length} buckets, ${coverage}% with data`);
+
+    if (data.anomalies_available === false) {
+      parts.push(data.anomalies_reason || "not enough history to judge anything yet");
+    } else if (!data.anomalies.length) {
+      parts.push(`nothing unusual across ${data.judged} judged buckets`);
+    } else {
+      const above = data.anomalies.filter((a) => a.direction === "above").length;
+      const below = data.anomalies.length - above;
+      parts.push(`${data.anomalies.length} unusual (${above} above, ${below} below baseline)`);
+    }
+
+    $("an-note").textContent = parts.join(" · ");
+    /* Low coverage is called out rather than left for the reader to infer from
+       grey bars. A chart of a week holding four hours of data looks exactly
+       like a quiet week. */
+    $("an-note").className = coverage < 70 ? "note warn" : "note";
+  } catch (err) {
+    chartData = null;
+    drawChart();
+    $("an-note").className = "note";
+    $("an-note").textContent = "could not load history";
+  }
+}
+$("an-metric").addEventListener("change", loadAnalytics);
+$("an-since").addEventListener("change", loadAnalytics);
+
+let resizeTimer = null;
+window.addEventListener("resize", () => {
+  clearTimeout(resizeTimer);
+  resizeTimer = setTimeout(drawChart, 120);
+});
+
+/* ---- entity drawer -------------------------------------------------- */
+
+$("entities").addEventListener("click", (event) => {
+  const button = event.target.closest("[data-entity]");
+  if (button) openEntity(button.dataset.entity);
+});
+$("drawer-close").addEventListener("click", closeDrawer);
+$("drawer").addEventListener("click", (e) => { if (e.target === $("drawer")) closeDrawer(); });
+document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeDrawer(); });
+
+function closeDrawer() { $("drawer").removeAttribute("open"); }
+
+async function openEntity(entityId) {
+  $("drawer").setAttribute("open", "");
+  $("drawer-title").textContent = entityId;
+  $("drawer-body").textContent = "loading";
+  try {
+    const data = await getJSON("/api/timeline?entity=" + encodeURIComponent(entityId) + "&limit=100");
+    if (!data.available) {
+      $("drawer-body").textContent =
+        data.reason || "No store attached, so there is no history to show.";
+      return;
+    }
+    if (!data.events.length) {
+      $("drawer-body").innerHTML =
+        `<span style="color:var(--faint)">No events recorded for ${esc(entityId)}. `
+        + "It has been seen, but nothing it did matched a rule.</span>";
+      return;
+    }
+    $("drawer-body").innerHTML =
+      `<div style="color:var(--faint);font-size:12px;margin-bottom:8px">`
+      + `${data.events.length} events over ${duration(data.span_s)}</div>`
+      + data.events.map((e) => `
+        <div class="ev ${esc(e.severity)}" style="padding:7px 0">
+          <time>${clock(e.timestamp)}</time>
+          <span class="bar"></span>
+          <span>${esc(e.summary)}</span>
+          <span class="rule">${esc(e.rule)}</span>
+        </div>`).join("");
+  } catch (err) {
+    $("drawer-body").textContent = "could not load this entity's history";
+  }
+}
+
+/* ---- stats ---------------------------------------------------------- */
 
 async function loadStats() {
   try {
     const stats = await getJSON("/api/stats");
-    $("camera").textContent = stats.camera_id;
-    if (stats.store) {
-      const mb = (stats.store.bytes || 0) / 1e6;
-      $("store").textContent =
-        `${stats.store.events.toLocaleString()} events · ` +
-        `${stats.store.observations.toLocaleString()} observations · ${mb.toFixed(1)} MB`;
-    } else {
-      $("store").innerHTML = '<span class="warn">not recording (start with --store)</span>';
+    $("uptime").textContent = duration(stats.uptime_s);
+    if (!$("cam").textContent || $("cam").textContent === "-") {
+      $("cam").textContent = stats.camera_id;
     }
-  } catch (err) { /* header detail is cosmetic; the panels report their own errors */ }
+    if (stats.store) {
+      $("k-events").textContent = compact(stats.store.events || 0);
+      $("k-obs").textContent = compact(stats.store.observations || 0);
+      const mb = (stats.store.bytes || 0) / 1048576;
+      $("foot").textContent =
+        `${stats.camera_id} · schema v${stats.schema_version} · `
+        + `${mb.toFixed(1)} MB stored · read-only, no authentication`;
+    } else {
+      $("k-events").textContent = "-";
+      $("k-obs").textContent = "-";
+      $("foot").textContent =
+        "no store attached · history and trends need --store · read-only";
+    }
+  } catch (err) { /* the live poll already reports connection loss */ }
 }
 
-$("refresh").addEventListener("click", loadHistory);
-$("since").addEventListener("change", loadHistory);
-$("severity").addEventListener("change", loadHistory);
+/* ---- go ------------------------------------------------------------- */
 
-pollLive(); loadHistory(); loadStats();
-setInterval(pollLive, LIVE_MS);
-setInterval(loadHistory, HISTORY_MS);
-setInterval(loadStats, HISTORY_MS);
+pollLive();
+loadStats();
+loadEvents();
+loadAnalytics();
+setInterval(pollLive, 1000);
+setInterval(loadStats, 10000);
+setInterval(() => { if ($("ev-since").value !== "") loadEvents(); }, 15000);
+setInterval(loadAnalytics, 60000);
 </script>
 </body>
 </html>

@@ -494,3 +494,123 @@ class TestIdentityReachesTheDashboard:
         """So the browser can tell "not running" from "running, nobody known"."""
         snapshot = self.snapshot_for(None)
         assert snapshot.entities[0]["identity"] is None
+
+
+class TestThePageMatchesTheBackend:
+    """Guards a bug class the dashboard hit twice in one sitting.
+
+    The page is HTML and the contracts are Python enums, so nothing connects
+    them and nothing complains when they drift. Both drifts shipped:
+
+    * The health panel branched on ``stage.broken`` and ``stage.circuit_open``.
+      Neither field exists - ``StageRegistry`` publishes ``disabled`` - so a
+      stage whose circuit had opened rendered as "ok", in the one panel whose
+      whole purpose is to say when something has stopped.
+    * The event list styled ``info`` / ``warning`` / ``critical``. The real
+      severities are ``info`` / ``notice`` / ``alert``, so two of the three
+      rendered as unknown and the severity filter offered two options that could
+      never match a single row.
+
+    Both look right when read and are wrong against the data. These assert the
+    page names things the backend actually produces.
+    """
+
+    @staticmethod
+    def page() -> str:
+        from vantage.dashboard import server as server_module
+
+        return (Path(server_module.__file__).parent / "static" / "index.html").read_text(
+            encoding="utf-8"
+        )
+
+    def test_every_severity_is_styled_and_filterable(self) -> None:
+        from vantage.events.contracts import Severity
+
+        page = self.page()
+        for severity in Severity:
+            assert f".ev.{severity.value} " in page or f".ev.{severity.value}." in page, (
+                f"severity {severity.value!r} has no styling, so it renders "
+                "indistinguishably from an unrecognised value"
+            )
+            assert f'<option value="{severity.value}">' in page, (
+                f"severity {severity.value!r} is missing from the filter"
+            )
+
+    def test_the_filter_offers_no_severity_that_cannot_exist(self) -> None:
+        import re
+
+        from vantage.events.contracts import Severity
+
+        real = {s.value for s in Severity}
+        block = self.page().split('id="ev-sev"')[1].split("</select>")[0]
+        offered = set(re.findall(r'<option value="([^"]*)"', block)) - {""}
+        assert offered <= real, f"filter offers {offered - real}, which no event can be"
+
+    def test_the_health_panel_reads_fields_that_exist(self) -> None:
+        from vantage.core.resilience import StageRegistry
+
+        registry = StageRegistry()
+        registry.guard("detection").run(lambda: None)
+        published = set(next(iter(registry.to_dict().values())))
+
+        page = self.page()
+        for field in ("disabled", "failures", "calls", "last_error"):
+            assert field in published, f"StageRegistry no longer publishes {field!r}"
+            assert f"stage.{field}" in page, f"the health panel ignores {field!r}"
+
+    def test_every_chart_metric_exists(self) -> None:
+        import re
+
+        from vantage.analytics.contracts import Metric
+
+        block = self.page().split('id="an-metric"')[1].split("</select>")[0]
+        offered = set(re.findall(r'<option value="([^"]*)"', block))
+        assert offered <= {m.value for m in Metric}, (
+            f"the chart offers metrics the analytics engine does not have: "
+            f"{offered - {m.value for m in Metric}}"
+        )
+
+    def test_the_page_makes_no_external_requests(self) -> None:
+        """It is served locally to a machine that may have no internet.
+
+        A font, an icon set or a charting library from a CDN turns a working
+        dashboard into a broken-looking one the moment the network is gone -
+        which, for something watching a camera, is exactly when it matters.
+        """
+        page = self.page()
+        for marker in ("http://", "https://", "//cdn", "//unpkg", "//fonts."):
+            offenders = [
+                line.strip()
+                for line in page.splitlines()
+                if marker in line and "localhost" not in line and "://" in line
+            ]
+            assert not offenders, f"external reference: {offenders[:2]}"
+
+    def test_the_javascript_parses(self) -> None:
+        """A syntax error here kills the whole page, silently.
+
+        Every other test in this file talks to the server and passes regardless
+        of whether the browser can run what it was sent - the JSON is fine, the
+        HTML is fine, and the page is blank. Node is used when present because
+        it is the only parser available that agrees with a browser; where it is
+        absent the check is skipped rather than faked.
+        """
+        import re
+        import shutil
+        import subprocess
+        import tempfile
+
+        node = shutil.which("node")
+        if node is None:
+            pytest.skip("node is not installed; cannot parse the page's JavaScript")
+
+        script = re.search(r"<script>(.*?)</script>", self.page(), re.S)
+        assert script, "the page has no script block"
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "dashboard.js"
+            path.write_text(script.group(1), encoding="utf-8")
+            result = subprocess.run(
+                [node, "--check", str(path)], capture_output=True, text=True
+            )
+        assert result.returncode == 0, result.stderr

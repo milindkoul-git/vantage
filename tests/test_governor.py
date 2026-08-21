@@ -252,32 +252,31 @@ class TestPipelineIntegration:
         assert result.frames == 60
 
     def test_a_fast_detector_leaves_it_alone(self) -> None:
-        """A detector that costs nothing must not drive sustained escalation.
+        """A detector that costs nothing must never move the interval.
 
-        Asserting ``peak_interval == 1`` was wrong, and flaky about one run in
-        three. The governor measures real wall-clock analysis cost, so a busy
-        machine can push one frame over budget even when the detector itself is
-        free - and raising the interval in response is the governor working, not
-        failing. The test was asserting that the machine running it was idle.
+        Run on the system clock, this assertion is a bet that the machine is
+        idle. The governor measures real wall-clock analysis time, so ambient
+        load pushes frames over budget even when the detector itself is free -
+        and raising the interval in response is the governor working correctly.
+        Measured: it failed about one run in three on a busy machine, and still
+        failed one in five with the threshold relaxed to two.
 
-        What is actually guaranteed is that a free detector produces no
-        *sustained* pressure: at most a single step in response to transient
-        load, and the interval comes back down.
+        Relaxing the assertion was the wrong fix twice, because there is no
+        threshold that is both meaningful and load-independent. The right fix is
+        to stop measuring wall-clock time: ``ManualClock`` advances only when
+        something sleeps on it, and nothing does inside the analysis block, so
+        the observed cost is exactly zero on any machine under any load. The
+        strong assertion then holds deterministically rather than usually.
         """
         from vantage.app import run_ingestion
+        from vantage.core.clock import ManualClock
 
         config, engine = self.build(adaptive=True, cost_ms=0.0)
-        result = run_ingestion(config, engine=engine)
-        adaptive = result.adaptive
+        result = run_ingestion(config, engine=engine, clock=ManualClock())
 
-        assert adaptive["peak_interval"] <= 2, (
-            f"a zero-cost detector escalated to {adaptive['peak_interval']}, which "
-            "is more than transient machine load can explain"
-        )
-        assert adaptive["interval"] == 1, (
-            "the interval did not return to 1 after the load passed, which is a "
-            "governor that ratchets rather than adapts"
-        )
+        assert result.adaptive["last_cost_ms"] == 0.0
+        assert result.adaptive["peak_interval"] == 1
+        assert result.adaptive["raises"] == 0
 
     def test_disabled_means_no_governor_at_all(self) -> None:
         from vantage.app import run_ingestion
