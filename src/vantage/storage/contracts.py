@@ -214,6 +214,45 @@ class Store(Protocol):
     def close(self) -> None: ...
 
 
+@runtime_checkable
+class IntelligenceStore(Store, Protocol):
+    """A store that also holds the derived graphs, not just the raw record.
+
+    Deliberately separate from :class:`Store`. ``Store`` is what the writer needs
+    in order to record what a camera saw, and every backend must implement all of
+    it; the relationship graph, the incident log and the operator-drawn zones sit
+    a layer above that, and a backend is allowed to exist without them.
+
+    Separate rather than folded into ``Store`` because the two ways of asking
+    "can this store hold incidents?" are not equivalent. ``isinstance(store,
+    IntelligenceStore)`` is a checkable fact about the backend; probing with
+    ``getattr`` and falling back to an empty list makes a backend that is missing
+    a method indistinguishable from a facility where nothing happened, which is
+    the exact confusion the availability flags exist to prevent.
+    """
+
+    def write_relationships(self, records: list[dict[str, Any]]) -> int: ...
+
+    def relationships(
+        self,
+        entity_id: str | None = None,
+        min_confidence: float = 0.0,
+        limit: int = 100,
+    ) -> list[dict[str, Any]]: ...
+
+    def write_incidents(self, records: list[dict[str, Any]]) -> int: ...
+
+    def incidents(self, state: str | None = None, limit: int = 50) -> list[dict[str, Any]]: ...
+
+    def get_incident(self, incident_id: str) -> dict[str, Any] | None: ...
+
+    def save_zone(self, zone_dict: dict[str, Any]) -> None: ...
+
+    def delete_zone(self, zone_id: str) -> None: ...
+
+    def list_zones(self, camera_id: str | None = None) -> list[dict[str, Any]]: ...
+
+
 @dataclass(frozen=True, slots=True)
 class Timeline:
     """Events for one entity, in order. What "event timeline" means concretely."""

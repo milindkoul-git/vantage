@@ -20,6 +20,7 @@ on the HUD instead of being quietly dropped.
 from __future__ import annotations
 
 import time
+from collections import Counter, deque
 from collections.abc import Sequence
 from dataclasses import dataclass
 
@@ -31,7 +32,7 @@ from vantage.core.frame import Frame
 from vantage.core.logging import get_logger
 from vantage.perception.backends.base import InferenceBackend
 from vantage.pose.adapter import RTMPoseAdapter
-from vantage.pose.contracts import Pose, PoseResult
+from vantage.pose.contracts import Pose, PoseResult, Posture
 from vantage.pose.posture import classify
 from vantage.tracking.contracts import Track, TrackingResult
 
@@ -89,6 +90,7 @@ class PoseEngine:
         self._labels = tuple(label.strip().lower() for label in person_labels if label.strip())
         self._clock = clock
         self._closed = False
+        self._posture_history: dict[int, deque[Posture]] = {}
         self._info = PoseEngineInfo(
             model=model_name,
             backend=backend.info.name,
@@ -139,13 +141,20 @@ class PoseEngine:
                 model=self._info.model,
             )
             estimate = classify(pose, self._min_keypoint_confidence)
+            hist = self._posture_history.setdefault(track.track_id, deque(maxlen=4))
+            hist.append(estimate.posture)
+            stable_posture = (
+                Counter(hist).most_common(1)[0][0]
+                if estimate.confidence > 0
+                else estimate.posture
+            )
             poses.append(
                 Pose(
                     keypoints=pose.keypoints,
                     track_id=pose.track_id,
                     entity_id=pose.entity_id,
                     box=pose.box,
-                    posture=estimate.posture,
+                    posture=stable_posture,
                     posture_confidence=estimate.confidence,
                     posture_reason=estimate.reason,
                     model=pose.model,
@@ -156,6 +165,11 @@ class PoseEngine:
             preprocess_ms += (after_pre - start) * 1000.0
             inference_ms += (after_infer - after_pre) * 1000.0
             postprocess_ms += (after_post - after_infer) * 1000.0
+
+        # Prune retired tracks
+        live_track_ids = {t.track_id for t in tracking.tracks}
+        for tid in set(self._posture_history.keys()) - live_track_ids:
+            del self._posture_history[tid]
 
         return PoseResult(
             poses=tuple(poses),

@@ -291,6 +291,50 @@ dashboard:
   # Every endpoint is read-only. Pruning and configuration stay on the CLI,
   # where the operator is by definition the person at the machine.
 
+incidents:
+  # Grouping raised events into situations.
+  #
+  # Purely derived: it reads the events the event engine already raises, needs
+  # no model and no second pass over the frame. ON whenever events are, because
+  # a stream of individual alerts with nothing joining them is work an operator
+  # otherwise has to do in their head.
+  #
+  # An incident is a set of events the correlator judged to be one thing. It
+  # scores each new event against every open incident on five weighted factors -
+  # entity overlap, temporal proximity, spatial continuity, known association,
+  # behaviour - less a penalty for continuity it cannot explain, and the winning
+  # breakdown is stored on the incident so the dossier can say why.
+
+  enabled: true
+
+  attach_threshold: 0.65
+  candidate_threshold: 0.35
+  # Three bands, not two. Above attach, the event joins outright. Below
+  # candidate, it opens a new incident. Between them it opens a new incident
+  # AND records the link on both, because a guess recorded as a certainty is
+  # worse than two incidents an operator can merge in one click.
+
+  quiescent_timeout_s: 60.0
+  resolution_timeout_s: 300.0
+  # Quiescent is "nothing new for a minute", not "over". An incident resolves
+  # only after five, so a person who steps out of frame and comes back does not
+  # produce two incidents.
+
+relationships:
+  # Which anonymous entities keep appearing together, and how strongly.
+  #
+  # OFF by default. Unlike incidents, this accumulates state about *pairs*
+  # across a whole session, which is a thing a deployment should opt into rather
+  # than inherit. The identifiers are the tracker's own anonymous ones -
+  # person_17 - and no part of this resolves or requires a name.
+
+  enabled: false
+
+  min_strength: 0.0    # floor for an edge to be reported at all
+  persist_interval_s: 30.0
+  # How often the graph is flushed to the store. Every frame would rewrite the
+  # whole graph thirty times a second; never would lose the session on a kill.
+
 identity:
   # Answering *who*, and the only subsystem in this project that does.
   #

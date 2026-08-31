@@ -143,7 +143,21 @@ def classify(pose: Pose, min_keypoint_confidence: float = 0.3) -> PostureEstimat
             "indistinguishable without them",
         )
 
-    hip_knee = (knee[1] - hip[1]) / torso_length
+    # Check individual leg drops to handle walking strides without mid-point dilution
+    l_drop = (
+        (joint[LEFT_KNEE][1] - joint[LEFT_HIP][1]) / torso_length
+        if (LEFT_KNEE in joint and LEFT_HIP in joint)
+        else None
+    )
+    r_drop = (
+        (joint[RIGHT_KNEE][1] - joint[RIGHT_HIP][1]) / torso_length
+        if (RIGHT_KNEE in joint and RIGHT_HIP in joint)
+        else None
+    )
+    hip_knee_mid = (knee[1] - hip[1]) / torso_length
+    hip_knee = max(
+        [d for d in (l_drop, r_drop, hip_knee_mid) if d is not None], default=hip_knee_mid
+    )
     ankle = _midpoint(joint, LEFT_ANKLE, RIGHT_ANKLE)
 
     if hip_knee >= EXTENDED:

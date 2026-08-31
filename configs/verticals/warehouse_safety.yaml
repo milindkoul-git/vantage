@@ -1,0 +1,76 @@
+# Vantage — Warehouse & Industrial Safety Configuration Preset
+#
+# Focuses on restricted zone entry, person-machinery proximity hazards,
+# excessive speed in aisles, and immediate fall detection.
+
+app:
+  log_level: INFO
+  log_format: console
+  stats_interval_s: 5.0
+
+source:
+  uri: "synthetic://?width=1280&height=720&fps=30&objects=4"
+  backend: auto
+
+detection:
+  enabled: true
+  model: dfine-s-obj365
+  confidence: 0.35
+  classes: [person, car, truck]
+
+tracking:
+  enabled: true
+  min_hits: 3
+  max_lost_s: 2.0
+
+pose:
+  enabled: true
+  model: rtmpose-s
+  max_persons: 6
+
+state:
+  enabled: true
+  moving_above: 0.20
+
+activity:
+  enabled: true
+  loiter_s: 30.0
+
+spatial:
+  enabled: true
+  zones:
+    - name: "machinery_hazard_zone"
+      kind: "restricted"
+      points: [[0.1, 0.1], [0.4, 0.1], [0.4, 0.5], [0.1, 0.5]]
+    - name: "forklift_lane"
+      kind: "transit"
+      points: [[0.5, 0.0], [0.8, 0.0], [0.8, 1.0], [0.5, 1.0]]
+
+events:
+  enabled: true
+  rules:
+    - type: activity
+      activity: falling
+      severity: alert
+      cooldown_s: 15.0
+      name: "worker_fall_detected"
+    - type: activity
+      activity: running
+      severity: notice
+      min_seconds: 1.0
+      name: "unsafe_speed_in_warehouse"
+    - type: zone_entry
+      zones: [machinery_hazard_zone]
+      severity: alert
+      cooldown_s: 5.0
+      name: "restricted_hazard_entry"
+    - type: relation
+      relation: near
+      min_confidence: 0.80
+      severity: warn
+      cooldown_s: 10.0
+      name: "worker_machinery_proximity"
+
+storage:
+  enabled: true
+  path: "vantage_warehouse.db"

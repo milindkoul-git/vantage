@@ -30,6 +30,12 @@ DEFAULT_ARGS = [
     "yolox-tiny",
     "--dashboard",
     "--store",
+    # Relationship tracking is off by default platform-wide because it keeps
+    # state about pairs of entities for the length of the run. Double-clicking
+    # the executable is a request for the whole console, so it is on here; the
+    # CLI still defaults it off.
+    "--set",
+    "relationships.enabled=true",
     # No window: the dashboard is the interface here, and an OpenCV window
     # behind the browser would be two views of the same thing, one of which
     # cannot be closed except by pressing q in it.
@@ -45,6 +51,9 @@ BANNER = """
 
       http://localhost:{port}
 
+  On it: the annotated camera, incidents, hourly trends, the
+  association graph, and search over everything recorded.
+
   First launch downloads about 40 MB of models, which takes a
   minute. The log below is that happening, not an error.
 
@@ -58,7 +67,8 @@ READY = """
 
       http://localhost:{port}
 
-  Watching the camera. Close this window to stop.
+  Watching the camera, and recording to vantage.db beside this
+  executable. Close this window to stop.
 ==============================================================
 """
 

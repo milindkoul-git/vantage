@@ -68,7 +68,10 @@ class OpenVinoBackend(InferenceBackend):
         #   GPU compile, warm cache   182 ms   <- the crashing path
         # Under a second of one-off startup, against a process that then runs
         # for hours. Not a trade worth making.
-        config: dict[str, str] = {"PERFORMANCE_HINT": "LATENCY"}
+        config: dict[str, str] = {
+            "PERFORMANCE_HINT": "LATENCY",
+            "EXECUTION_MODE_HINT": "PERFORMANCE",
+        }
         if threads > 0 and resolved.startswith("CPU"):
             config["INFERENCE_NUM_THREADS"] = str(threads)
 

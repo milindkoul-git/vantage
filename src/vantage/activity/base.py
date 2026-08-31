@@ -48,3 +48,6 @@ class Recognizer(Protocol):
     def reset(self) -> None:
         """Discard all state."""
         ...
+
+
+ActivityRecognizer = Recognizer

@@ -16,6 +16,8 @@ def build_dashboard(
     store=None,
     feed: LiveFeed | None = None,
     camera_id: str = "camera_01",
+    incident_service=None,
+    relationship_service=None,
 ) -> DashboardServer:
     """Construct a server from a DashboardConfig.
 
@@ -26,7 +28,13 @@ def build_dashboard(
     viewer cannot distinguish from a quiet scene.
     """
     return DashboardServer(
-        DashboardApi(store=store, feed=feed, camera_id=camera_id),
+        DashboardApi(
+            store=store,
+            feed=feed,
+            camera_id=camera_id,
+            incident_service=incident_service,
+            relationship_service=relationship_service,
+        ),
         feed,
         host=config.host,
         port=config.port,

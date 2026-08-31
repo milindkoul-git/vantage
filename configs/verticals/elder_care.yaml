@@ -1,0 +1,70 @@
+# Vantage — Elder Care & Assisted Living Configuration Preset
+#
+# Emphasizes privacy-first anonymous monitoring (biometrics disabled),
+# rapid fall detection, and prolonged bathroom/bedside dwell alerting.
+
+app:
+  log_level: INFO
+  log_format: console
+
+source:
+  uri: "synthetic://?width=1280&height=720&fps=30&objects=1"
+
+detection:
+  enabled: true
+  model: yolox-tiny
+  confidence: 0.30
+  classes: [person]
+
+tracking:
+  enabled: true
+  min_hits: 2
+  max_lost_s: 2.5
+
+pose:
+  enabled: true
+  model: rtmpose-s
+  include_face_keypoints: false  # Privacy protection: drops facial landmarks entirely
+
+state:
+  enabled: true
+  min_state_s: 0.4
+
+activity:
+  enabled: true
+  fall_window_s: 1.2
+  transient_hold_s: 2.0
+
+spatial:
+  enabled: true
+  zones:
+    - name: "bathroom"
+      kind: "monitored"
+      points: [[0.0, 0.0], [0.4, 0.0], [0.4, 0.5], [0.0, 0.5]]
+    - name: "bedside"
+      kind: "monitored"
+      points: [[0.5, 0.5], [1.0, 0.5], [1.0, 1.0], [0.5, 1.0]]
+
+events:
+  enabled: true
+  rules:
+    - type: activity
+      activity: falling
+      severity: alert
+      cooldown_s: 10.0
+      name: "resident_fall_emergency"
+    - type: zone_dwell
+      zones: [bathroom]
+      min_seconds: 600.0  # 10 minutes
+      severity: warn
+      cooldown_s: 300.0
+      name: "prolonged_bathroom_dwell"
+    - type: activity
+      activity: loitering
+      severity: info
+      min_seconds: 30.0
+      name: "stationary_observation"
+
+storage:
+  enabled: true
+  path: "vantage_care.db"

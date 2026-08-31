@@ -9,6 +9,7 @@ integration rather than the unit.
 from __future__ import annotations
 
 import json
+import re
 import socket
 import threading
 import time
@@ -25,6 +26,8 @@ from vantage.dashboard.api import MAX_LIMIT, DashboardApi
 from vantage.dashboard.live import LiveFeed, LiveSnapshot
 from vantage.dashboard.server import DashboardServer
 from vantage.storage.sqlite_store import SqliteStore
+
+from ._frontend_contract import FRONTEND, STATIC, built, object_keys, source, string_array
 
 
 def frame(width: int = 64, height: int = 48) -> np.ndarray:
@@ -199,7 +202,18 @@ class TestServer:
         with urlopen(server.url + "/", timeout=5) as response:
             body = response.read()
         assert b"<!DOCTYPE html>" in body
-        assert b"stream.mjpg" in body
+        # The shell loads the application; the application is what references
+        # the stream. Asserting on the shell alone would pass for a page whose
+        # script tag pointed at nothing.
+        assert b'<div id="root">' in body
+        assert b"assets/index.js" in body
+
+    def test_serves_the_application_bundle(self, server_factory) -> None:
+        server = server_factory(DashboardApi())
+        with urlopen(server.url + "/assets/index.js", timeout=5) as response:
+            assert response.status == 200
+            body = response.read()
+        assert b"stream.mjpg" in body, "the bundle never asks for the live stream"
 
     def test_serves_stats(self, server_factory, store: SqliteStore) -> None:
         server = server_factory(DashboardApi(store=store, camera_id="cam9"))
@@ -497,10 +511,10 @@ class TestIdentityReachesTheDashboard:
 
 
 class TestThePageMatchesTheBackend:
-    """Guards a bug class the dashboard hit twice in one sitting.
+    """Guards a bug class the dashboard hit three times.
 
-    The page is HTML and the contracts are Python enums, so nothing connects
-    them and nothing complains when they drift. Both drifts shipped:
+    The page and the contracts are written in different languages, so nothing
+    connects them and nothing complains when they drift. Three drifts shipped:
 
     * The health panel branched on ``stage.broken`` and ``stage.circuit_open``.
       Neither field exists - ``StageRegistry`` publishes ``disabled`` - so a
@@ -510,41 +524,93 @@ class TestThePageMatchesTheBackend:
       severities are ``info`` / ``notice`` / ``alert``, so two of the three
       rendered as unknown and the severity filter offered two options that could
       never match a single row.
+    * The whole TypeScript contract file was written against a fixture set
+      rather than against the server - ``start_time`` for ``first_seen``,
+      ``"ACTIVE"`` for ``"active"``, a severity breakdown sharing no field name
+      with the seven the server publishes. The page worked only in demo mode,
+      which is why demo mode was the default.
 
-    Both look right when read and are wrong against the data. These assert the
-    page names things the backend actually produces.
+    These read the front end's own vocabulary module, which is what its
+    components import, and check it against the Python enums. Reading the served
+    HTML instead is what let a hidden block of decoy ``<select>`` elements keep
+    an earlier version of these tests green while the real controls did not
+    exist.
     """
 
     @staticmethod
-    def page() -> str:
-        from vantage.dashboard import server as server_module
+    def vocabulary() -> str:
+        return source("src/contracts/vocabulary.ts")
 
-        return (Path(server_module.__file__).parent / "static" / "index.html").read_text(
-            encoding="utf-8"
-        )
-
-    def test_every_severity_is_styled_and_filterable(self) -> None:
+    def test_every_severity_is_offered_and_no_others(self) -> None:
         from vantage.events.contracts import Severity
 
-        page = self.page()
-        for severity in Severity:
-            assert f".ev.{severity.value} " in page or f".ev.{severity.value}." in page, (
-                f"severity {severity.value!r} has no styling, so it renders "
-                "indistinguishably from an unrecognised value"
-            )
-            assert f'<option value="{severity.value}">' in page, (
-                f"severity {severity.value!r} is missing from the filter"
-            )
+        offered = string_array(self.vocabulary(), "SEVERITIES")
+        assert set(offered) == {s.value for s in Severity}, (
+            "the front end's severity list has drifted from the Severity enum; "
+            "a value it invents is a filter option no row can match, and one it "
+            "misses renders as an unrecognised value"
+        )
 
-    def test_the_filter_offers_no_severity_that_cannot_exist(self) -> None:
-        import re
-
+    def test_every_severity_is_labelled_ranked_and_coloured(self) -> None:
         from vantage.events.contracts import Severity
 
         real = {s.value for s in Severity}
-        block = self.page().split('id="ev-sev"')[1].split("</select>")[0]
-        offered = set(re.findall(r'<option value="([^"]*)"', block)) - {""}
-        assert offered <= real, f"filter offers {offered - real}, which no event can be"
+        vocabulary = self.vocabulary()
+        for name in ("SEVERITY_LABELS", "SEVERITY_RANK"):
+            assert set(object_keys(vocabulary, name)) == real, f"{name} does not cover Severity"
+
+        colours = object_keys(vocabulary, "SEVERITY_COLOR")
+        assert set(colours) == real, "SEVERITY_COLOR does not cover Severity"
+
+    def test_every_severity_has_a_style_rule(self) -> None:
+        from vantage.events.contracts import Severity
+
+        css = source("src/index.css")
+        for severity in Severity:
+            assert f".ev-{severity.value}" in css, (
+                f"severity {severity.value!r} has no styling, so it renders "
+                "indistinguishably from an unrecognised value"
+            )
+
+    def test_the_severity_filter_is_generated_from_the_vocabulary(self) -> None:
+        """Not typed out again in the component, which is how it drifted before."""
+        workspace = source("src/features/investigate/InvestigateWorkspace.tsx")
+        assert 'id="ev-sev"' in workspace, "the severity filter is gone from the event log"
+        assert "SEVERITIES.map(" in workspace, (
+            "the severity filter enumerates its own options instead of mapping "
+            "over SEVERITIES, which is exactly how it came to offer 'warning'"
+        )
+
+    def test_every_chart_metric_exists(self) -> None:
+        from vantage.analytics.contracts import Metric
+
+        offered = set(string_array(self.vocabulary(), "METRICS"))
+        real = {m.value for m in Metric}
+        assert offered <= real, (
+            f"the chart offers metrics the analytics engine does not have: {offered - real}"
+        )
+        assert offered == real, f"the chart cannot show these metrics at all: {real - offered}"
+
+    def test_the_metric_and_window_controls_are_real(self) -> None:
+        """They were once a display:none block that satisfied this test alone."""
+        workspace = source("src/features/analytics/AnalyticsWorkspace.tsx")
+        for control in ('id="an-metric"', 'id="an-since"'):
+            assert control in workspace, f"{control} is missing from the analytics panel"
+        assert "METRICS.map(" in workspace and "ANALYTICS_WINDOWS.map(" in workspace
+        assert "api.analytics(" in workspace, (
+            "the analytics panel does not call the analytics endpoint, so its "
+            "controls would be decoration"
+        )
+
+    def test_every_analytics_window_parses(self) -> None:
+        from vantage.analytics.cli import parse_window
+
+        offered = re.findall(r"value: '([^']+)'", self.vocabulary())
+        assert offered, "the window selector offers nothing"
+        for window in offered:
+            assert parse_window(window) > 0, (
+                f"the page offers a window {window!r} the CLI rejects"
+            )
 
     def test_the_health_panel_reads_fields_that_exist(self) -> None:
         from vantage.core.resilience import StageRegistry
@@ -553,22 +619,46 @@ class TestThePageMatchesTheBackend:
         registry.guard("detection").run(lambda: None)
         published = set(next(iter(registry.to_dict().values())))
 
-        page = self.page()
+        declared = string_array(self.vocabulary(), "STAGE_FIELDS")
+        assert set(declared) <= published, (
+            f"STAGE_FIELDS names fields StageRegistry does not publish: {set(declared) - published}"
+        )
+
+        drawer = source("src/components/shell/OperationsDrawer.tsx")
         for field in ("disabled", "failures", "calls", "last_error"):
             assert field in published, f"StageRegistry no longer publishes {field!r}"
-            assert f"stage.{field}" in page, f"the health panel ignores {field!r}"
+            assert f"stage.{field}" in drawer, f"the health panel ignores {field!r}"
 
-    def test_every_chart_metric_exists(self) -> None:
-        import re
+    def test_the_incident_states_match(self) -> None:
+        from vantage.incident.models import IncidentState
 
-        from vantage.analytics.contracts import Metric
-
-        block = self.page().split('id="an-metric"')[1].split("</select>")[0]
-        offered = set(re.findall(r'<option value="([^"]*)"', block))
-        assert offered <= {m.value for m in Metric}, (
-            f"the chart offers metrics the analytics engine does not have: "
-            f"{offered - {m.value for m in Metric}}"
+        offered = set(string_array(self.vocabulary(), "INCIDENT_STATES"))
+        assert offered == {s.value for s in IncidentState}, (
+            "incident states have drifted; the page once expected 'ACTIVE' while "
+            "the API has only ever sent 'active', so no incident matched any filter"
         )
+
+    def test_the_page_ships_no_fixture_data(self) -> None:
+        """The demo fixtures are gone, and must not come back by the front door.
+
+        A hand-written intelligence snapshot shipped inside the bundle, switched
+        on by default, is the specific thing this project forbids: a feature that
+        is only mocked but presented as functional.
+        """
+        assert not (FRONTEND / "src" / "data" / "fixtures").exists(), (
+            "the demo fixture directory is back"
+        )
+        for name in ("src/data/source.ts", "src/store/useInvestigationStore.ts"):
+            # Comments are stripped first: both files explain the demo mode that
+            # was removed, and a check that cannot tell a mention from a
+            # declaration would forbid recording why it went.
+            text = re.sub(r"/\*.*?\*/", "", source(name), flags=re.S)
+            text = re.sub(r"//.*", "", text)
+            for banned in ("DemoDataSource", "isDemoMode", "getDataSource"):
+                assert banned not in text, (
+                    f"{name} reintroduces {banned}; the dashboard must show the "
+                    "pipeline's own output or say it has none"
+                )
 
     def test_the_page_makes_no_external_requests(self) -> None:
         """It is served locally to a machine that may have no internet.
@@ -576,56 +666,93 @@ class TestThePageMatchesTheBackend:
         A font, an icon set or a charting library from a CDN turns a working
         dashboard into a broken-looking one the moment the network is gone -
         which, for something watching a camera, is exactly when it matters.
-        """
-        import re
 
-        page = self.page()
+        Checks the built artefacts, not the sources: a stylesheet that imports
+        Google Fonts leaves no trace in the HTML shell.
+        """
+        page = built("index.html")
+        css = built("assets/index.css")
 
         # Inline data: URIs are not requests, and an SVG one legitimately
-        # contains http://www.w3.org/2000/svg - an XML namespace *name*, which
-        # no browser ever fetches. Removing them first is the difference between
+        # contains http://www.w3.org/2000/svg - an XML namespace *name*, which no
+        # browser ever fetches. Removing them first is the difference between
         # testing for network access and testing for the letters "http".
-        without_data_uris = re.sub(r'"data:[^"]*"', '"data:"', page)
-        without_data_uris = re.sub(r"'data:[^']*'", "'data:'", without_data_uris)
+        for text, what in ((page, "index.html"), (css, "index.css")):
+            without_data_uris = re.sub(r'"data:[^"]*"', '"data:"', text)
+            without_data_uris = re.sub(r"'data:[^']*'", "'data:'", without_data_uris)
+            without_data_uris = re.sub(r"url\(data:[^)]*\)", "url(data:)", without_data_uris)
 
-        pattern = (
-            r"""(?:src|href)\s*=\s*["']([^"']+)"""
-            r"""|url\(\s*["']?([^)"']+)"""
-        )
-        fetchable = re.findall(pattern, without_data_uris)
-        for a, b in fetchable:
-            target = (a or b).strip()
-            if not target or target.startswith(("data:", "#", "/", "./")):
-                continue
-            assert not target.startswith(("http://", "https://", "//")), (
-                f"the page fetches {target!r} from the network"
-            )
+            pattern = r"""(?:src|href)\s*=\s*["']([^"']+)|url\(\s*["']?([^)"']+)"""
+            for a, b in re.findall(pattern, without_data_uris):
+                target = (a or b).strip()
+                if not target or target.startswith(("data:", "#", "/", "./", "../")):
+                    continue
+                assert not target.startswith(("http://", "https://", "//")), (
+                    f"{what} fetches {target!r} from the network"
+                )
 
-    def test_the_javascript_parses(self) -> None:
+    def test_the_fonts_the_design_names_are_actually_bundled(self) -> None:
+        """Naming a family in a font stack does not load it.
+
+        The design specified Source Serif 4, IBM Plex Mono and Inter and shipped
+        with none of them: the browser silently fell back to Georgia, Consolas
+        and Segoe UI, so the page never looked the way it was drawn. Fetching
+        them from a CDN is ruled out by the test above, so they are bundled.
+        """
+        css = built("assets/index.css")
+        assert "@font-face" in css, "no font is bundled; the design's families would not load"
+        for family in ("Inter", "IBM Plex Mono", "Source Serif 4"):
+            assert family in css, f"{family} is named in the design but not bundled"
+
+    def test_the_built_javascript_parses(self) -> None:
         """A syntax error here kills the whole page, silently.
 
         Every other test in this file talks to the server and passes regardless
         of whether the browser can run what it was sent - the JSON is fine, the
-        HTML is fine, and the page is blank. Node is used when present because
-        it is the only parser available that agrees with a browser; where it is
-        absent the check is skipped rather than faked.
+        HTML is fine, and the page is blank. That happened: a temporal dead zone
+        error at module scope threw before the first render and the dashboard was
+        entirely dead while the suite was entirely green.
+
+        Node is used because it is the only parser available that agrees with a
+        browser; where it is absent the check is skipped rather than faked.
         """
-        import re
         import shutil
         import subprocess
-        import tempfile
 
         node = shutil.which("node")
         if node is None:
             pytest.skip("node is not installed; cannot parse the page's JavaScript")
 
-        script = re.search(r"<script>(.*?)</script>", self.page(), re.S)
-        assert script, "the page has no script block"
+        bundle = STATIC / "assets" / "index.js"
+        if not bundle.is_file():
+            pytest.skip("no built bundle; run `npm run build` in frontend/")
+
+        # Via a file rather than stdin: the bundle contains characters outside
+        # this console's code page, and piping it through a cp1252 stdin raises
+        # in Python before node ever sees the script.
+        import tempfile
 
         with tempfile.TemporaryDirectory() as tmp:
-            path = Path(tmp) / "dashboard.js"
-            path.write_text(script.group(1), encoding="utf-8")
+            path = Path(tmp) / "bundle.mjs"
+            path.write_bytes(bundle.read_bytes())
             result = subprocess.run(
                 [node, "--check", str(path)], capture_output=True, text=True
             )
         assert result.returncode == 0, result.stderr
+
+    def test_the_bundle_is_not_absurd(self) -> None:
+        """The dashboard is served over localhost, but not always to a fast machine.
+
+        three.js is most of the JavaScript this app can load and exactly one
+        panel uses it, so it is split out. This is a floor under that decision:
+        without it the split silently reverts on the next refactor and every
+        workspace pays for the 3D renderer again.
+        """
+        entry = STATIC / "assets" / "index.js"
+        if not entry.is_file():
+            pytest.skip("no built bundle; run `npm run build` in frontend/")
+        size_kb = entry.stat().st_size / 1024
+        assert size_kb < 400, (
+            f"the entry bundle is {size_kb:.0f} kB; three.js has probably been "
+            "pulled back onto the critical path"
+        )

@@ -29,6 +29,7 @@ from collections.abc import Iterator
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import Enum
+from typing import Any
 
 
 class Severity(str, Enum):
@@ -51,6 +52,28 @@ class Severity(str, Enum):
     @property
     def rank(self) -> int:
         return {"info": 0, "notice": 1, "alert": 2}[self.value]
+
+
+@dataclass(frozen=True, slots=True)
+class EventCandidate:
+    """A raw candidate event proposed by a perception, threat, or spatial subsystem.
+
+    EventCandidates are submitted to EventEngine for policy evaluation (cooldowns,
+    deduplication, severity thresholding, and evidence dispatch) before becoming an Event.
+    """
+
+    rule: str
+    severity: Severity | str
+    summary: str
+    entity_id: str | None = None
+    camera_id: str = "default"
+    wall_time: float = 0.0
+    evidence: dict[str, Any] = field(default_factory=dict)
+    zone: str | None = None
+    related_id: str | None = None
+    track_id: int | None = None
+    frame_index: int = 0
+    elapsed_s: float = 0.0
 
 
 @dataclass(frozen=True, slots=True)

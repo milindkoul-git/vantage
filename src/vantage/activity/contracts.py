@@ -60,6 +60,17 @@ class Activity(str, Enum):
     STANDING_UP = "standing_up"
     FALLING = "falling"
     ARM_RAISED = "arm_raised"
+    TALKING_ON_PHONE = "talking_on_phone"
+    HOLDING_PHONE = "holding_phone"
+    HOLDING_BOTTLE = "holding_bottle"
+    CARRYING_BAGGAGE = "carrying_baggage"
+    RIDING_VEHICLE = "riding_vehicle"
+    SEATED_ON_FURNITURE = "seated_on_furniture"
+    SUDDEN_COLLAPSE = "sudden_collapse"
+    ERRATIC_PACING = "erratic_pacing"
+    CROUCHING_DWELL = "crouching_dwell"
+    ERRATIC_HIGH_ENERGY_MOTION = "erratic_high_energy_motion"
+    ABRUPT_DIRECTION_REVERSAL = "abrupt_direction_reversal"
 
     @property
     def needs_pose(self) -> bool:
@@ -76,9 +87,24 @@ class Activity(str, Enum):
 
 
 _POSTURE_DERIVED = frozenset(
-    {Activity.SITTING_DOWN, Activity.STANDING_UP, Activity.FALLING, Activity.ARM_RAISED}
+    {
+        Activity.SITTING_DOWN,
+        Activity.STANDING_UP,
+        Activity.FALLING,
+        Activity.ARM_RAISED,
+        Activity.SUDDEN_COLLAPSE,
+        Activity.CROUCHING_DWELL,
+    }
 )
-_TRANSIENT = frozenset({Activity.SITTING_DOWN, Activity.STANDING_UP, Activity.FALLING})
+_TRANSIENT = frozenset(
+    {
+        Activity.SITTING_DOWN,
+        Activity.STANDING_UP,
+        Activity.FALLING,
+        Activity.SUDDEN_COLLAPSE,
+        Activity.ABRUPT_DIRECTION_REVERSAL,
+    }
+)
 
 
 @dataclass(frozen=True, slots=True)

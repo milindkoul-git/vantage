@@ -3,11 +3,22 @@
 A modular platform for understanding what happens in video over time — not just what
 appears in a single frame.
 
-**Status: Phases 1-11 complete** — ingestion, detection, tracking, pose, activity,
-spatial reasoning, events, storage, dashboard, identity, and historical analytics.
-Multi-camera scaling (12) remains. Each phase was built, verified and closed out on its
-own before the next began. Nothing in this repository is mocked or stubbed: what is here
-works, and what is not here is absent rather than faked.
+**Status: Phases 1–19 complete** — ingestion, detection, tracking, pose, activity,
+spatial reasoning, events, storage, dashboard, identity and historical analytics on a single
+camera; multi-camera scaling, cross-camera re-identification, geofence zones, a 3D facility
+twin, RTSP/USB connectors, incident correlation, relationship tracking, scene graphs and
+ontology search on top.
+
+Nothing in this repository is mocked or stubbed: what is here works, and what is not here is
+absent rather than faked. Where a subsystem is not running — because it needs a store, or a
+second camera, or a calibrated facility model — the dashboard says so and names the flag,
+rather than rendering an empty panel that reads as a quiet scene.
+
+**Two ways to run it.** `vantage run` watches one camera and is what `vantage.exe` and
+`webcam.bat` start. `vantage facility --cameras ID=URI …` runs several at once and is what the
+cross-camera surfaces — entity resolution, the twin, the floor plot, scene graphs — need.
+
+> 📖 **Comprehensive System Reference**: For complete end-to-end architectural specifications, mathematical formulas, data contracts, and REST API documentation, see [`PROJECT_KNOWLEDGE_BASE.md`](PROJECT_KNOWLEDGE_BASE.md).
 
 **Identity is off by default and always optional.** Every other subsystem runs
 identically with it disabled — see [Phase 10](#2k-what-phase-10-delivers).

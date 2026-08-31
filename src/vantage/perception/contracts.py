@@ -77,6 +77,14 @@ class BoundingBox:
         """
         return (self.x1 + self.x2) / 2.0, self.y2
 
+    def contains(self, x: float, y: float) -> bool:
+        """Whether a point falls inside the box, edges included.
+
+        Inclusive on both edges so that a point taken from the box itself -
+        a corner, the centre, a foot point - is always inside its own box.
+        """
+        return self.x1 <= x <= self.x2 and self.y1 <= y <= self.y2
+
     def to_int(self) -> tuple[int, int, int, int]:
         """Rounded ``(x1, y1, x2, y2)``, for drawing and cropping."""
         return (

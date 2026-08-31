@@ -21,8 +21,11 @@ The layering separates three things that change for different reasons:
 
 from vantage.perception.contracts import BoundingBox, Detection, DetectionResult
 from vantage.perception.engine import DetectionEngine, EngineInfo, build_engine
+from vantage.perception.stage import AsyncInferenceStage, AsyncInferenceStats
 
 __all__ = [
+    "AsyncInferenceStage",
+    "AsyncInferenceStats",
     "BoundingBox",
     "Detection",
     "DetectionEngine",

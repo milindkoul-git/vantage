@@ -484,3 +484,7 @@ def _arm_raised(pose: Pose | None, min_confidence: float) -> tuple[bool, float]:
         if wrist.y < shoulder.y:
             best = max(best, min(wrist.confidence, shoulder.confidence))
     return best > 0.0, best
+
+
+# Architectural alias: truthful naming reflecting heuristic temporal rule evaluation
+HeuristicTemporalRecognizer = RuleRecognizer

@@ -158,6 +158,28 @@ def _make_handler(api: DashboardApi, feed: LiveFeed | None):
                     self._send_stream()
                 elif route == "/snapshot.jpg":
                     self._send_snapshot()
+                elif route.startswith("/api/evidence/"):
+                    clip_name = route[len("/api/evidence/") :]
+                    clip_path = Path("data/evidence") / clip_name
+                    self._send_video(clip_path)
+                elif route.startswith("/static/"):
+                    sub_path = route[len("/static/") :]
+                    target_file = (_STATIC / sub_path).resolve()
+                    if target_file.is_file() and str(target_file).startswith(
+                        str(_STATIC.resolve())
+                    ):
+                        self._send_file(target_file)
+                    else:
+                        self._send_error(HTTPStatus.NOT_FOUND, f"no static file {route}")
+                elif route.startswith("/assets/"):
+                    sub_path = route.lstrip("/")
+                    target_file = (_STATIC / sub_path).resolve()
+                    if target_file.is_file() and str(target_file).startswith(
+                        str(_STATIC.resolve())
+                    ):
+                        self._send_file(target_file)
+                    else:
+                        self._send_error(HTTPStatus.NOT_FOUND, f"no static file {route}")
                 elif route.startswith("/api/"):
                     self._send_json(api.handle(route[len("/api/") :], params))
                 else:
@@ -176,6 +198,44 @@ def _make_handler(api: DashboardApi, feed: LiveFeed | None):
                 )
                 self._send_error(HTTPStatus.INTERNAL_SERVER_ERROR, str(exc))
 
+        def do_POST(self) -> None:
+            parsed = urlparse(self.path)
+            route = parsed.path.rstrip("/") or "/"
+
+            try:
+                if route.startswith("/api/"):
+                    content_length = int(self.headers.get("Content-Length", 0))
+                    body_bytes = self.rfile.read(content_length)
+                    data = json.loads(body_bytes.decode("utf-8")) if body_bytes else {}
+                    subroute = route[len("/api/") :]
+                    res = api.handle_post(subroute, data)
+                    self._send_json(res)
+                else:
+                    self._send_error(HTTPStatus.NOT_FOUND, f"no POST route {route}")
+            except ValueError as exc:
+                self._send_error(HTTPStatus.BAD_REQUEST, str(exc))
+            except Exception as exc:
+                log.warning("dashboard POST request failed", exc_info=True)
+                self._send_error(HTTPStatus.INTERNAL_SERVER_ERROR, str(exc))
+
+        def do_DELETE(self) -> None:
+            parsed = urlparse(self.path)
+            route = parsed.path.rstrip("/") or "/"
+            params = {k: v[0] for k, v in parse_qs(parsed.query).items()}
+
+            try:
+                if route.startswith("/api/"):
+                    subroute = route[len("/api/") :]
+                    res = api.handle_delete(subroute, params)
+                    self._send_json(res)
+                else:
+                    self._send_error(HTTPStatus.NOT_FOUND, f"no DELETE route {route}")
+            except ValueError as exc:
+                self._send_error(HTTPStatus.BAD_REQUEST, str(exc))
+            except Exception as exc:
+                log.warning("dashboard DELETE request failed", exc_info=True)
+                self._send_error(HTTPStatus.INTERNAL_SERVER_ERROR, str(exc))
+
         # -- responses ----------------------------------------------------
 
         def _send_page(self) -> None:
@@ -189,6 +249,33 @@ def _make_handler(api: DashboardApi, feed: LiveFeed | None):
             self.send_header("Cache-Control", "no-store")
             self.end_headers()
             self.wfile.write(body)
+            self.wfile.flush()
+
+        def _send_file(self, path: Path) -> None:
+            if not path.is_file():
+                self._send_error(HTTPStatus.NOT_FOUND, f"file not found: {path.name}")
+                return
+            ext = path.suffix.lower()
+            mime_types = {
+                ".js": "application/javascript",
+                ".css": "text/css",
+                ".json": "application/json",
+                ".png": "image/png",
+                ".jpg": "image/jpeg",
+                ".svg": "image/svg+xml",
+                ".wasm": "application/wasm",
+            }
+            content_type = mime_types.get(ext, "application/octet-stream")
+            file_size = path.stat().st_size
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Content-Length", str(file_size))
+            self.send_header("Cache-Control", "public, max-age=86400")
+            self.end_headers()
+            with open(path, "rb") as f:
+                while chunk := f.read(64 * 1024):
+                    self.wfile.write(chunk)
+            self.wfile.flush()
 
         def _send_json(self, payload: dict[str, Any]) -> None:
             body = json.dumps(payload).encode("utf-8")
@@ -198,6 +285,7 @@ def _make_handler(api: DashboardApi, feed: LiveFeed | None):
             self.send_header("Cache-Control", "no-store")
             self.end_headers()
             self.wfile.write(body)
+            self.wfile.flush()
 
         def _send_snapshot(self) -> None:
             jpeg = feed.latest_jpeg() if feed is not None else None
@@ -249,6 +337,60 @@ def _make_handler(api: DashboardApi, feed: LiveFeed | None):
                 pass
             finally:
                 feed.viewer_closed()
+
+        def _send_video(self, clip_path: Path) -> None:
+            if not clip_path.is_file():
+                self._send_error(
+                    HTTPStatus.NOT_FOUND, f"Evidence clip {clip_path.name} not found"
+                )
+                return
+
+            file_size = clip_path.stat().st_size
+            range_header = self.headers.get("Range")
+
+            if range_header and range_header.startswith("bytes="):
+                try:
+                    parts = range_header[6:].split("-")
+                    start = int(parts[0]) if parts[0] else 0
+                    end = int(parts[1]) if len(parts) > 1 and parts[1] else file_size - 1
+                    start = max(0, min(start, file_size - 1))
+                    end = max(start, min(end, file_size - 1))
+                    length = end - start + 1
+
+                    self.send_response(HTTPStatus.PARTIAL_CONTENT)
+                    self.send_header("Content-Type", "video/mp4")
+                    self.send_header("Content-Range", f"bytes {start}-{end}/{file_size}")
+                    self.send_header("Content-Length", str(length))
+                    self.send_header("Accept-Ranges", "bytes")
+                    self.send_header("Cache-Control", "public, max-age=3600")
+                    self.end_headers()
+
+                    with open(clip_path, "rb") as f:
+                        f.seek(start)
+                        bytes_left = length
+                        while bytes_left > 0:
+                            chunk = f.read(min(65536, bytes_left))
+                            if not chunk:
+                                break
+                            self.wfile.write(chunk)
+                            bytes_left -= len(chunk)
+                        self.wfile.flush()
+                    return
+                except (BrokenPipeError, ConnectionResetError):
+                    return
+                except Exception:
+                    pass
+
+            # Full file playback response
+            data = clip_path.read_bytes()
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", "video/mp4")
+            self.send_header("Content-Length", str(len(data)))
+            self.send_header("Accept-Ranges", "bytes")
+            self.send_header("Cache-Control", "public, max-age=3600")
+            self.end_headers()
+            self.wfile.write(data)
+            self.wfile.flush()
 
         def _send_error(self, status: HTTPStatus, message: str) -> None:
             body = json.dumps({"error": message, "status": int(status)}).encode("utf-8")

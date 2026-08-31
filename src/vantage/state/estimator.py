@@ -76,9 +76,11 @@ class _EntityHistory:
         "distance",
         "dwell_s",
         "last_center",
+        "last_height",
         "motion",
         "pending",
         "pending_s",
+        "smoothed_speed",
     )
 
     def __init__(self) -> None:
@@ -86,13 +88,15 @@ class _EntityHistory:
         self.dwell_s = 0.0
         self.age_s = 0.0
         self.distance = 0.0
+        self.last_center: tuple[float, float] | None = None
+        self.last_height: float | None = None
         self.pending: MotionState | None = None
         self.pending_s = 0.0
-        self.last_center: tuple[float, float] | None = None
+        self.smoothed_speed = 0.0
 
 
 class StateEstimator:
-    """Derives motion state for every tracked entity, frame by frame."""
+    """Computes motion state, speed, dwell, bearing and distance per entity."""
 
     def __init__(self, params: StateParams | None = None) -> None:
         self._params = params or StateParams()
@@ -107,7 +111,7 @@ class StateEstimator:
         return len(self._history)
 
     def update(self, tracking: TrackingResult) -> StateResult:
-        """Advance every entity's state by ``tracking.elapsed_s``."""
+        """Advance every track's state by ``tracking.elapsed_s``."""
         elapsed = max(0.0, tracking.elapsed_s)
         states: list[EntityState] = []
         seen: set[int] = set()
@@ -141,7 +145,22 @@ class StateEstimator:
 
         height = max(track.box.height, 1.0)
         vx, vy = track.velocity
-        speed = math.hypot(vx, vy) / height
+        trans_speed = math.hypot(vx, vy) / height
+
+        # Depth perspective scale expansion for walking towards/away from camera
+        depth_speed = 0.0
+        if history.last_height is not None and elapsed > 0:
+            dh_dt = abs(height - history.last_height) / elapsed
+            depth_speed = 1.2 * (dh_dt / height)
+        history.last_height = height
+
+        raw_speed = max(trans_speed, depth_speed)
+        # Apply exponential moving average to filter bounding box regression jitter
+        if history.age_s > elapsed and history.smoothed_speed > 0:
+            history.smoothed_speed = 0.65 * history.smoothed_speed + 0.35 * raw_speed
+        else:
+            history.smoothed_speed = raw_speed
+        speed = history.smoothed_speed
 
         centre = track.center
         step = (

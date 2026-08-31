@@ -26,9 +26,12 @@ seconds means ten seconds of footage whatever the machine was doing.
 
 from __future__ import annotations
 
+import time
+from collections.abc import Sequence
+
 from vantage.activity.contracts import ActivityResult
 from vantage.core.logging import get_logger
-from vantage.events.contracts import Event, EventResult, Severity
+from vantage.events.contracts import Event, EventCandidate, EventResult, Severity
 from vantage.events.rules import DEFAULT_RULES, RuleSpec, SceneContext, evaluate
 from vantage.spatial.contracts import SpatialResult
 from vantage.state.contracts import StateResult
@@ -36,12 +39,44 @@ from vantage.tracking.contracts import TrackingResult
 
 log = get_logger(__name__)
 
+DEFAULT_CANDIDATE_COOLDOWNS: dict[str, float] = {
+    "tailgating": 25.0,
+    "wrong_way_direction": 25.0,
+    "loitering": 45.0,
+    "cross_camera_handover": 30.0,
+    "exclusion_breach": 20.0,
+    "occupancy_limit": 20.0,
+    "dwell_threshold": 30.0,
+    "directional_flow": 25.0,
+    "sudden_collapse": 20.0,
+    "erratic_pacing": 30.0,
+    "erratic_high_energy_motion": 25.0,
+    "crouching_dwell": 30.0,
+    "abrupt_direction_reversal": 20.0,
+    "group_convergence": 40.0,
+    "group_dispersion": 40.0,
+    "unattended_object_dwell": 60.0,
+    "following_pattern": 45.0,
+    "recurring_proximity": 60.0,
+    "recurrent_interaction": 60.0,
+    "group_association": 60.0,
+    "incident_escalation": 60.0,
+    "incident_merge_candidate": 60.0,
+}
+
 
 class EventEngine:
     """Applies a rule set to each frame, debouncing what it produces."""
 
-    def __init__(self, rules: tuple[RuleSpec, ...] | None = None) -> None:
+    def __init__(
+        self,
+        rules: tuple[RuleSpec, ...] | None = None,
+        custom_cooldowns: dict[str, float] | None = None,
+    ) -> None:
         self._rules = tuple(rules) if rules is not None else DEFAULT_RULES
+        self._custom_cooldowns = dict(DEFAULT_CANDIDATE_COOLDOWNS)
+        if custom_cooldowns:
+            self._custom_cooldowns.update(custom_cooldowns)
         self._last_fired: dict[tuple[str, str | None], float] = {}
         self._elapsed = 0.0
         self._raised = 0
@@ -139,6 +174,75 @@ class EventEngine:
             suppressed=suppressed,
             metadata={"elapsed_total_s": round(self._elapsed, 2)},
         )
+
+    def evaluate_candidate(self, candidate: EventCandidate) -> Event | None:
+        """Evaluate a single EventCandidate against cooldown and suppression policy."""
+        # Find cooldown
+        cooldown_s = self._custom_cooldowns.get(candidate.rule, 15.0)
+        for spec in self._rules:
+            if spec.name == candidate.rule:
+                cooldown_s = spec.cooldown_s
+                break
+
+        key = (candidate.rule, candidate.entity_id)
+        current_time = candidate.wall_time if candidate.wall_time > 0 else self._elapsed
+        last_t = self._last_fired.get(key, 0.0)
+
+        if current_time - last_t < cooldown_s:
+            self._suppressed += 1
+            return None
+
+        self._last_fired[key] = current_time
+        self._raised += 1
+        self._by_rule[candidate.rule] = self._by_rule.get(candidate.rule, 0) + 1
+
+        # Normalize severity
+        sev = candidate.severity
+        if isinstance(sev, str):
+            sev = (
+                Severity(sev.lower())
+                if sev.lower() in ("info", "notice", "alert")
+                else Severity.INFO
+            )
+
+        event = Event(
+            rule=candidate.rule,
+            severity=sev,
+            summary=candidate.summary,
+            entity_id=candidate.entity_id,
+            track_id=candidate.track_id,
+            frame_index=candidate.frame_index,
+            capture_wall=candidate.wall_time or time.time(),
+            elapsed_s=candidate.elapsed_s or round(current_time % 1000, 2),
+            evidence=dict(candidate.evidence),
+            zone=candidate.zone,
+            related_id=candidate.related_id,
+        )
+
+        logger = log.warning if event.severity is Severity.ALERT else log.info
+        logger(
+            "event",
+            extra={
+                "vantage_fields": {
+                    "rule": event.rule,
+                    "severity": event.severity.value,
+                    "summary": event.summary,
+                    "entity_id": event.entity_id,
+                    "camera_id": candidate.camera_id,
+                    **{f"evidence_{k}": v for k, v in event.evidence.items()},
+                }
+            },
+        )
+        return event
+
+    def evaluate_candidates(self, candidates: Sequence[EventCandidate]) -> tuple[Event, ...]:
+        """Evaluate a sequence of EventCandidates, returning allowed Events."""
+        events: list[Event] = []
+        for cand in candidates:
+            ev = self.evaluate_candidate(cand)
+            if ev is not None:
+                events.append(ev)
+        return tuple(events)
 
     def _is_cooling(self, event: Event, cooldown_s: float) -> bool:
         if cooldown_s <= 0:

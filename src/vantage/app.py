@@ -90,6 +90,8 @@ class RunResult:
     adaptive: dict[str, Any] = field(default_factory=dict)
     events_raised: int = 0
     events_summary: dict[str, Any] = field(default_factory=dict)
+    incidents_summary: dict[str, Any] = field(default_factory=dict)
+    relationships_summary: dict[str, Any] = field(default_factory=dict)
     identity_summary: dict[str, Any] = field(default_factory=dict)
     storage_summary: dict[str, Any] = field(default_factory=dict)
 
@@ -181,6 +183,19 @@ class RunResult:
                 # thousands is either correctly debouncing a continuous state or
                 # badly configured, and only the count tells the two apart.
                 + f", {detail.get('suppressed', 0)} suppressed by cooldown"
+            )
+        if self.incidents_summary:
+            detail = self.incidents_summary
+            base += (
+                f"\nincidents: {detail.get('opened', 0)} opened from "
+                f"{detail.get('events_correlated', 0)} events, "
+                f"{detail.get('active', 0)} still active"
+            )
+        if self.relationships_summary:
+            detail = self.relationships_summary
+            base += (
+                f"\nrelationships: {detail.get('edges', 0)} pairs seen together, "
+                f"{detail.get('strong', 0)} above 0.5"
             )
         if self.storage_summary:
             detail = self.storage_summary
@@ -300,7 +315,16 @@ def run_ingestion(
     store, store_writer, recorder = _build_storage(config)
     identity_engine, identity_store = _build_identity(config)
     latest_identity = None
-    live_feed, dashboard = _build_dashboard(config, store)
+    camera_id = config.source.id or "camera_01"
+    incident_service = _build_incident_service(config, store, event_engine)
+    relationship_service = _build_relationship_service(config, store)
+    incidents_seen: set[str] = set()
+    live_feed, dashboard = _build_dashboard(
+        config,
+        store,
+        incident_service=incident_service,
+        relationship_service=relationship_service,
+    )
 
     # One guard per stage. A stage that throws loses its frame, not the run;
     # a stage that throws repeatedly is disabled and said so, loudly.
@@ -491,6 +515,23 @@ def run_ingestion(
                             )
                             if latest_events is not None and latest_events.events:
                                 events_raised += len(latest_events)
+                                if incident_service is not None:
+                                    stages.guard("incidents").run(
+                                        _correlate_incidents,
+                                        incident_service,
+                                        latest_events,
+                                        camera_id,
+                                        incidents_seen,
+                                    )
+                        if relationship_service is not None and latest_state is not None:
+                            stages.guard("relationships").run(
+                                _observe_relationships,
+                                relationship_service,
+                                latest_tracking,
+                                latest_state,
+                                frame,
+                                camera_id,
+                            )
                         # Persistence last, and guarded: a full disk must lose
                         # rows, never frames.
                         if recorder is not None:
@@ -648,6 +689,12 @@ def run_ingestion(
             dashboard.stop()
         if identity_store is not None:
             identity_store.close()
+        # Both graphs live in memory and are flushed on a cadence; without a
+        # final write the last interval of a clean shutdown is simply lost.
+        if incident_service is not None and store is not None:
+            incident_service.persist_to_store()
+        if relationship_service is not None and store is not None:
+            relationship_service.persist_to_store()
         if store is not None:
             _prune_store(store, config)
             store.close()
@@ -675,6 +722,8 @@ def run_ingestion(
         adaptive=(governor.stats.to_dict() if governor is not None else {}),
         events_raised=events_raised,
         events_summary=(dict(event_engine.stats()) if event_engine is not None else {}),
+        incidents_summary=_incidents_summary(incident_service, incidents_seen),
+        relationships_summary=_relationships_summary(relationship_service),
         identity_summary=(dict(identity_engine.stats()) if identity_engine is not None else {}),
         storage_summary=(store_writer.stats.to_dict() if store_writer is not None else {}),
         resources=(final_resources.to_dict() if final_resources is not None else {}),
@@ -825,11 +874,22 @@ def _build_identity(config: VantageConfig) -> tuple[Any, Any]:
     return build_identity_engine(config.identity)
 
 
-def _build_dashboard(config: VantageConfig, store: Any) -> tuple[Any, Any]:
+def _build_dashboard(
+    config: VantageConfig,
+    store: Any,
+    *,
+    incident_service: Any | None = None,
+    relationship_service: Any | None = None,
+) -> tuple[Any, Any]:
     """Start the dashboard, or return ``(None, None)`` when it is disabled.
 
     The live feed is created here rather than inside the server because the run
     loop publishes into it and the server reads from it; neither owns the other.
+
+    The incident and relationship services are handed over so the browser reads
+    the same objects the run loop is writing to. Without that the pages exist
+    but answer from an empty store, which reads as a quiet facility rather than
+    as a dashboard wired to nothing.
     """
     if not config.dashboard.enabled:
         return None, None
@@ -844,6 +904,8 @@ def _build_dashboard(config: VantageConfig, store: Any) -> tuple[Any, Any]:
         store=store,
         feed=feed,
         camera_id=config.source.id or "camera_01",
+        incident_service=incident_service,
+        relationship_service=relationship_service,
     )
     url = server.start()
     log.info("dashboard started", extra={"vantage_fields": {"url": url}})
@@ -961,6 +1023,145 @@ def _prune_store(store: Any, config: VantageConfig) -> None:
             "retention failed",
             extra={"vantage_fields": {"error": f"{type(exc).__name__}: {exc}"}},
         )
+
+
+def _build_incident_service(config: VantageConfig, store: Any, event_engine: Any) -> Any | None:
+    """Construct incident correlation, or ``None`` when it cannot run.
+
+    Gated on the event engine existing rather than on the config flag alone:
+    incidents are groups of raised events, and with no engine there is nothing
+    to group. Returning ``None`` here is what makes ``/api/incidents`` say
+    "unavailable" instead of "none found".
+    """
+    if not config.incidents.enabled or event_engine is None:
+        return None
+    from vantage.incident.config import IncidentCorrelatorConfig
+    from vantage.incident.service import IncidentService
+
+    return IncidentService(
+        store=store,
+        config=IncidentCorrelatorConfig(
+            attach_threshold=config.incidents.attach_threshold,
+            candidate_threshold=config.incidents.candidate_threshold,
+            quiescent_timeout_s=config.incidents.quiescent_timeout_s,
+            resolution_timeout_s=config.incidents.resolution_timeout_s,
+        ),
+    )
+
+
+def _build_relationship_service(config: VantageConfig, store: Any) -> Any | None:
+    """Construct the persistent relationship graph, or ``None`` when it is off."""
+    if not config.relationships.enabled:
+        return None
+    from vantage.relationship.service import RelationshipService
+
+    return RelationshipService(
+        store=store,
+        auto_persist_interval_s=config.relationships.persist_interval_s,
+        camera_id=config.source.id or "camera_01",
+    )
+
+
+def _correlate_incidents(
+    service: Any,
+    events: Any,
+    camera_id: str,
+    seen: set[str],
+) -> None:
+    """Feed this frame's events into incident correlation.
+
+    Each event is handed over in the flat dict shape the incident service reads,
+    which is the same shape the store writes - one vocabulary for a raised event,
+    not two.
+    """
+    for event in events.events:
+        incident, _decision, _candidates = service.ingest_event(
+            {
+                "id": f"{camera_id}:{event.frame_index}:{event.rule}",
+                "rule": event.rule,
+                "severity": event.severity.value,
+                "summary": event.summary,
+                "entity_id": event.entity_id,
+                "related_id": event.related_id,
+                "camera_id": camera_id,
+                "zone": event.zone,
+                "timestamp": event.capture_wall,
+                "frame_index": event.frame_index,
+                "elapsed_s": event.elapsed_s,
+                "evidence": dict(event.evidence),
+            },
+            now=event.capture_wall,
+        )
+        seen.add(incident.incident_id)
+
+
+def _observe_relationships(
+    service: Any,
+    tracking: Any,
+    state: Any,
+    frame: Any,
+    camera_id: str,
+) -> None:
+    """Feed this frame's tracked positions into the relationship graph.
+
+    Positions are the foot point normalised to the frame, because proximity
+    between two people has to survive a change of resolution, and the pixel
+    distance between two boxes does not.
+    """
+    if tracking is None:
+        return
+    height, width = frame.image.shape[:2]
+    if width <= 0 or height <= 0:
+        return
+    boxes = {track.track_id: track.box for track in tracking.tracks}
+    active: list[tuple[str, float, float, float, float | None]] = []
+    for entity in state:
+        box = boxes.get(entity.track_id)
+        if box is None:
+            continue
+        foot_x, foot_y = box.bottom_center
+        active.append(
+            (
+                entity.entity_id,
+                foot_x / width,
+                foot_y / height,
+                entity.speed,
+                entity.bearing_deg,
+            )
+        )
+    if len(active) < 2:
+        return
+    service.tracker.process_frame(
+        camera_id=camera_id,
+        active_entities=active,
+        scene_graph=None,
+        entity_trajectories=None,
+        now=state.capture_wall,
+    )
+    service.maybe_persist(state.capture_wall)
+
+
+def _incidents_summary(service: Any, seen: set[str]) -> dict[str, Any]:
+    if service is None:
+        return {}
+    from vantage.incident.models import IncidentState
+
+    incidents = service.get_incidents(limit=500)
+    return {
+        "opened": len(seen),
+        "events_correlated": sum(incident.event_count for incident in incidents),
+        "active": sum(1 for incident in incidents if incident.state is IncidentState.ACTIVE),
+    }
+
+
+def _relationships_summary(service: Any) -> dict[str, Any]:
+    if service is None:
+        return {}
+    edges = service.tracker.get_all_relationships()
+    return {
+        "edges": len(edges),
+        "strong": sum(1 for edge in edges if edge.active_strength >= 0.5),
+    }
 
 
 def _build_event_engine(config: VantageConfig) -> EventEngine | None:

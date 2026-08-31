@@ -23,6 +23,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
+from typing import Any
 
 from vantage.activity.contracts import Activity, ActivityResult
 from vantage.core.errors import ConfigError
@@ -60,6 +61,7 @@ class SceneContext:
     frame_index: int
     capture_wall: float
     source_id: str
+    baseline_feed: Any = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -82,6 +84,7 @@ class RuleSpec:
     min_confidence: float = 0.0
     min_seconds: float = 0.0
     min_count: int = 2
+    factor: float = 2.0
 
     def __post_init__(self) -> None:
         if self.type not in RULE_TYPES:
@@ -320,12 +323,79 @@ def _relation_rule(spec: RuleSpec, context: SceneContext) -> list[Event]:
     return events
 
 
+def _adaptive_occupancy_rule(spec: RuleSpec, context: SceneContext) -> list[Event]:
+    """Fires when zone occupancy is anomalous compared to learned baseline."""
+    if context.spatial is None:
+        return []
+    events: list[Event] = []
+    feed = context.baseline_feed
+
+    for zone, count in sorted(context.spatial.occupancy().items()):
+        if not spec.wants_zone(zone):
+            continue
+
+        if feed is not None:
+            from vantage.analytics.contracts import Metric
+
+            is_anom, _score, details = feed.check_anomaly(
+                Metric.ENTITIES,
+                float(count),
+                context.capture_wall,
+                zone=zone,
+                multiplier=spec.factor,
+            )
+            if details.get("known", False):
+                if not is_anom:
+                    continue
+                events.append(
+                    Event(
+                        rule=spec.label,
+                        severity=spec.severity,
+                        summary=f"Anomalous occupancy in {zone}: {count} entities (baseline: {details['expected_center']} +/- {details['expected_spread']})",
+                        entity_id=None,
+                        track_id=None,
+                        frame_index=context.frame_index,
+                        capture_wall=context.capture_wall,
+                        elapsed_s=context.elapsed_s,
+                        zone=zone,
+                        evidence={
+                            "count": count,
+                            "baseline_center": details["expected_center"],
+                            "baseline_spread": details["expected_spread"],
+                            "score": details["score"],
+                            "factor": spec.factor,
+                            "samples": details["samples"],
+                        },
+                    )
+                )
+                continue
+
+        # Fallback to static threshold if baseline not available or unknown
+        if count >= spec.min_count:
+            events.append(
+                Event(
+                    rule=spec.label,
+                    severity=spec.severity,
+                    summary=f"{count} entities in {zone} (static fallback)",
+                    entity_id=None,
+                    track_id=None,
+                    frame_index=context.frame_index,
+                    capture_wall=context.capture_wall,
+                    elapsed_s=context.elapsed_s,
+                    zone=zone,
+                    evidence={"count": count, "threshold": spec.min_count, "fallback": True},
+                )
+            )
+    return events
+
+
 RULE_TYPES: dict[str, Callable[[RuleSpec, SceneContext], list[Event]]] = {
     "activity": _activity_rule,
     "zone_entry": _zone_crossing_rule(ZoneEvent.ENTERED),
     "zone_exit": _zone_crossing_rule(ZoneEvent.EXITED),
     "zone_dwell": _zone_dwell_rule,
     "zone_occupancy": _zone_occupancy_rule,
+    "adaptive_occupancy": _adaptive_occupancy_rule,
     "relation": _relation_rule,
 }
 

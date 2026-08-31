@@ -37,3 +37,9 @@ models/
 dist/
 build/
 *.spec.bak
+
+# Front-end dependencies. The built bundle in
+# src/vantage/dashboard/static IS committed - the dashboard server reads it
+# from disk and the packaged exe bundles it - but its inputs are not.
+frontend/node_modules/
+frontend/dist/

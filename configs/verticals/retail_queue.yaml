@@ -1,0 +1,66 @@
+# Vantage — Retail Flow & Queue Analytics Configuration Preset
+#
+# Tracks checkout queue buildup, entrance footfall, dwell times, and
+# dynamic baseline traffic anomalies.
+
+app:
+  log_level: INFO
+  log_format: console
+
+source:
+  uri: "synthetic://?width=1280&height=720&fps=30&objects=6"
+
+detection:
+  enabled: true
+  model: yolox-tiny
+  confidence: 0.30
+  classes: [person]
+
+tracking:
+  enabled: true
+  min_hits: 3
+  max_lost_s: 1.5
+
+state:
+  enabled: true
+  stationary_below: 0.08
+  min_state_s: 1.0
+
+activity:
+  enabled: true
+  loiter_s: 45.0
+
+spatial:
+  enabled: true
+  zones:
+    - name: "checkout_queue_1"
+      kind: "queue"
+      points: [[0.6, 0.3], [0.9, 0.3], [0.9, 0.8], [0.6, 0.8]]
+    - name: "promo_display"
+      kind: "dwell_area"
+      points: [[0.1, 0.2], [0.4, 0.2], [0.4, 0.6], [0.1, 0.6]]
+
+events:
+  enabled: true
+  rules:
+    - type: zone_occupancy
+      zones: [checkout_queue_1]
+      min_count: 5
+      severity: notice
+      cooldown_s: 60.0
+      name: "queue_line_exceeded"
+    - type: adaptive_occupancy
+      zones: [checkout_queue_1]
+      factor: 2.0
+      severity: warn
+      cooldown_s: 120.0
+      name: "abnormal_queue_congestion"
+    - type: zone_dwell
+      zones: [promo_display]
+      min_seconds: 20.0
+      severity: info
+      name: "shopper_promo_engagement"
+
+storage:
+  enabled: true
+  path: "vantage_retail.db"

@@ -38,7 +38,7 @@ import sqlite3
 
 from vantage.core.errors import VantageError
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 4
 
 DELIMITER = ","
 """Wraps every element of a denormalised list column.
@@ -54,6 +54,24 @@ CREATE TABLE IF NOT EXISTS schema_version (
     version INTEGER NOT NULL,
     applied_at REAL NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS incidents (
+    incident_id TEXT PRIMARY KEY,
+    title TEXT NOT NULL,
+    state TEXT NOT NULL,
+    severity TEXT NOT NULL,
+    first_seen REAL NOT NULL,
+    last_seen REAL NOT NULL,
+    cameras TEXT NOT NULL,
+    zones TEXT NOT NULL,
+    entities TEXT NOT NULL,
+    event_count INTEGER NOT NULL,
+    dossier_json TEXT NOT NULL,
+    updated_at REAL NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_incidents_time ON incidents (last_seen);
+CREATE INDEX IF NOT EXISTS idx_incidents_state ON incidents (state);
 
 CREATE TABLE IF NOT EXISTS events (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -86,6 +104,31 @@ CREATE TABLE IF NOT EXISTS observations (
     frame_index INTEGER NOT NULL,
     elapsed_s REAL NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS relationship_graph (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    camera_id TEXT NOT NULL,
+    entity_a TEXT NOT NULL,
+    entity_b_or_zone TEXT NOT NULL,
+    relation_type TEXT NOT NULL,
+    first_seen REAL NOT NULL,
+    last_seen REAL NOT NULL,
+    occurrence_count INTEGER NOT NULL,
+    max_confidence_tier REAL NOT NULL,
+    evidence TEXT
+);
+
+CREATE TABLE IF NOT EXISTS zones (
+    zone_id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    camera_id TEXT NOT NULL,
+    zone_type TEXT NOT NULL,
+    polygon_json TEXT NOT NULL,
+    rule_config_json TEXT NOT NULL,
+    severity TEXT NOT NULL,
+    color TEXT NOT NULL,
+    updated_at REAL NOT NULL
+);
 """
 
 _INDEXES = """
@@ -107,6 +150,9 @@ CREATE INDEX IF NOT EXISTS idx_events_severity ON events (severity, timestamp);
 CREATE INDEX IF NOT EXISTS idx_events_rule ON events (rule, timestamp);
 CREATE INDEX IF NOT EXISTS idx_observations_entity ON observations (entity_id, timestamp);
 CREATE INDEX IF NOT EXISTS idx_heartbeat_time ON heartbeat (timestamp);
+CREATE INDEX IF NOT EXISTS idx_relationship_entities ON relationship_graph (entity_a, entity_b_or_zone);
+CREATE INDEX IF NOT EXISTS idx_relationship_time ON relationship_graph (last_seen);
+CREATE INDEX IF NOT EXISTS idx_zones_camera ON zones (camera_id);
 """
 
 _PRAGMAS = (
@@ -180,22 +226,48 @@ def _migrate(connection: sqlite3.Connection, from_version: int, now: float) -> N
     """
     steps: dict[int, str] = {
         # v2: the heartbeat table.
-        #
-        # Analytics needs to tell "nobody was there" apart from "nothing was
-        # recording", and no arrangement of the observation rows can settle it:
-        # an office with a nine-hour overnight quiet period and an office whose
-        # recorder died at 21:00 produce byte-identical tables. Inferring it from
-        # neighbouring buckets works for short gaps and cannot work for long
-        # ones, because the honest answer is that the rows do not contain it.
-        #
-        # A row saying "this camera was alive at this moment" does contain it,
-        # and it costs one insert a minute.
         2: """
         CREATE TABLE IF NOT EXISTS heartbeat (
             camera_id TEXT NOT NULL,
             timestamp REAL NOT NULL
         );
         CREATE INDEX IF NOT EXISTS idx_heartbeat_time ON heartbeat (timestamp);
+        """,
+        # v3: persistent relationship graph.
+        3: """
+        CREATE TABLE IF NOT EXISTS relationship_graph (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            camera_id TEXT NOT NULL,
+            entity_a TEXT NOT NULL,
+            entity_b_or_zone TEXT NOT NULL,
+            relation_type TEXT NOT NULL,
+            first_seen REAL NOT NULL,
+            last_seen REAL NOT NULL,
+            occurrence_count INTEGER NOT NULL,
+            max_confidence_tier REAL NOT NULL,
+            evidence TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_relationship_entities ON relationship_graph (entity_a, entity_b_or_zone);
+        CREATE INDEX IF NOT EXISTS idx_relationship_time ON relationship_graph (last_seen);
+        """,
+        # v4: situational incidents.
+        4: """
+        CREATE TABLE IF NOT EXISTS incidents (
+            incident_id TEXT PRIMARY KEY,
+            title TEXT NOT NULL,
+            state TEXT NOT NULL,
+            severity TEXT NOT NULL,
+            first_seen REAL NOT NULL,
+            last_seen REAL NOT NULL,
+            cameras TEXT NOT NULL,
+            zones TEXT NOT NULL,
+            entities TEXT NOT NULL,
+            event_count INTEGER NOT NULL,
+            dossier_json TEXT NOT NULL,
+            updated_at REAL NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_incidents_time ON incidents (last_seen);
+        CREATE INDEX IF NOT EXISTS idx_incidents_state ON incidents (state);
         """,
     }
     for version in range(from_version + 1, SCHEMA_VERSION + 1):

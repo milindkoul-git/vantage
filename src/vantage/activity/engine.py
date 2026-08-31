@@ -13,9 +13,16 @@ loiter has to mean ten seconds of *footage*, whatever the machine was doing.
 from __future__ import annotations
 
 from vantage.activity.base import Recognizer
-from vantage.activity.contracts import ActivityResult, EntityActivity
+from vantage.activity.contracts import (
+    Activity,
+    ActivityObservation,
+    ActivityResult,
+    EntityActivity,
+)
+from vantage.activity.hoi import HOIFusionEngine
 from vantage.activity.recognizer import ActivityParams, RuleRecognizer
 from vantage.core.logging import get_logger
+from vantage.perception.contracts import Detection
 from vantage.pose.contracts import PoseResult
 from vantage.state.contracts import StateResult
 
@@ -27,6 +34,7 @@ class ActivityEngine:
 
     def __init__(self, recognizer: Recognizer | None = None) -> None:
         self._recognizer: Recognizer = recognizer or RuleRecognizer()
+        self._hoi = HOIFusionEngine()
         self._elapsed = 0.0
 
     @property
@@ -38,7 +46,12 @@ class ActivityEngine:
         """Footage time seen so far."""
         return self._elapsed
 
-    def update(self, state: StateResult, pose: PoseResult | None = None) -> ActivityResult:
+    def update(
+        self,
+        state: StateResult,
+        pose: PoseResult | None = None,
+        detections: list[Detection] | tuple[Detection, ...] | None = None,
+    ) -> ActivityResult:
         """Advance every entity by ``state.elapsed_s`` and report activities."""
         self._elapsed += max(0.0, state.elapsed_s)
 
@@ -49,11 +62,36 @@ class ActivityEngine:
 
         entities: list[EntityActivity] = []
         for entity_state in state:
-            entities.append(
-                self._recognizer.observe(
-                    entity_state, poses.get(entity_state.track_id), self._elapsed
+            p_pose = poses.get(entity_state.track_id)
+            act = self._recognizer.observe(entity_state, p_pose, self._elapsed)
+            # Check Human-Object Interactions if detections available
+            if detections and entity_state.label == "person" and p_pose is not None:
+                hoi_events = self._hoi.analyze(
+                    person_box=p_pose.box,
+                    pose=p_pose,
+                    all_detections=detections,
                 )
-            )
+                if hoi_events:
+                    extra_obs = list(act.observations)
+                    for h in hoi_events:
+                        if hasattr(Activity, h.verb.upper()):
+                            act_enum = getattr(Activity, h.verb.upper())
+                            extra_obs.append(
+                                ActivityObservation(
+                                    activity=act_enum,
+                                    confidence=h.confidence,
+                                    duration_s=0.0,
+                                    evidence=h.evidence,
+                                )
+                            )
+                    act = EntityActivity(
+                        track_id=act.track_id,
+                        entity_id=act.entity_id,
+                        label=act.label,
+                        observations=tuple(extra_obs),
+                    )
+            entities.append(act)
+
         self._recognizer.forget({entity_state.track_id for entity_state in state})
 
         return ActivityResult(
@@ -75,6 +113,12 @@ def build_activity_engine(config=None) -> ActivityEngine:
     """Construct from an :class:`~vantage.config.schema.ActivityConfig`."""
     if config is None:
         return ActivityEngine()
+    if getattr(config, "mode", "rules") == "learned":
+        from vantage.activity.learned import LearnedActionClassifier
+
+        return ActivityEngine(
+            LearnedActionClassifier(transient_hold_s=getattr(config, "transient_hold_s", 1.5))
+        )
     return ActivityEngine(
         RuleRecognizer(
             ActivityParams(

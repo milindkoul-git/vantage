@@ -19,6 +19,7 @@ from vantage.storage.schema import (
     initialise,
     like_term,
     unwrap_list,
+    wrap_list,
 )
 
 log = get_logger(__name__)
@@ -150,7 +151,14 @@ class SqliteStore:
         if not records:
             return 0
         rows = [
-            tuple(record.get(column) for column in _OBSERVATION_COLUMNS) for record in records
+            tuple(
+                wrap_list(record.get(column))
+                if column in ("zones", "activities")
+                and isinstance(record.get(column), (list, tuple))
+                else record.get(column)
+                for column in _OBSERVATION_COLUMNS
+            )
+            for record in records
         ]
         return self._insert("observations", _OBSERVATION_COLUMNS, rows)
 
@@ -296,6 +304,237 @@ class SqliteStore:
             raise
         connection.execute("COMMIT")
         return removed
+
+    def write_relationships(self, records: list[dict[str, Any]]) -> int:
+        """Write relationship graph records."""
+        if not records or self._read_only:
+            return 0
+        connection = self._require()
+        statement = """
+        INSERT INTO relationship_graph (
+            camera_id, entity_a, entity_b_or_zone, relation_type,
+            first_seen, last_seen, occurrence_count, max_confidence_tier, evidence
+        ) VALUES (
+            :camera_id, :entity_a, :entity_b_or_zone, :relation_type,
+            :first_seen, :last_seen, :occurrence_count, :max_confidence_tier, :evidence
+        )
+        """
+        try:
+            with connection:
+                connection.executemany(statement, records)
+            return len(records)
+        except sqlite3.Error as exc:
+            log.error(
+                "could not write relationships", extra={"vantage_fields": {"error": str(exc)}}
+            )
+            return 0
+
+    def relationships(
+        self,
+        entity_id: str | None = None,
+        min_confidence: float = 0.0,
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        """Query persistent relationship edges."""
+        connection = self._require()
+        clauses = ["max_confidence_tier >= ?"]
+        params: list[Any] = [min_confidence]
+        if entity_id:
+            clauses.append("(entity_a = ? OR entity_b_or_zone = ?)")
+            params.extend([entity_id, entity_id])
+        where = " AND ".join(clauses)
+        params.append(limit)
+        cursor = connection.execute(
+            f"SELECT * FROM relationship_graph WHERE {where} ORDER BY last_seen DESC LIMIT ?",
+            params,
+        )
+        results: list[dict[str, Any]] = []
+        for row in cursor.fetchall():
+            try:
+                ev = json.loads(row["evidence"]) if row["evidence"] else {}
+            except Exception:
+                ev = {}
+            results.append(
+                {
+                    "id": row["id"],
+                    "camera_id": row["camera_id"],
+                    "entity_a": row["entity_a"],
+                    "entity_b_or_zone": row["entity_b_or_zone"],
+                    "relation_type": row["relation_type"],
+                    "first_seen": row["first_seen"],
+                    "last_seen": row["last_seen"],
+                    "occurrence_count": row["occurrence_count"],
+                    "max_confidence_tier": row["max_confidence_tier"],
+                    "evidence": ev,
+                }
+            )
+        return results
+
+    def write_incidents(self, records: list[dict[str, Any]]) -> int:
+        """Write or update situational incident records."""
+        if not records or self._read_only:
+            return 0
+        connection = self._require()
+        statement = """
+        INSERT INTO incidents (
+            incident_id, title, state, severity, first_seen, last_seen,
+            cameras, zones, entities, event_count, dossier_json, updated_at
+        ) VALUES (
+            :incident_id, :title, :state, :severity, :first_seen, :last_seen,
+            :cameras, :zones, :entities, :event_count, :dossier_json, :updated_at
+        )
+        ON CONFLICT(incident_id) DO UPDATE SET
+            title = excluded.title,
+            state = excluded.state,
+            severity = excluded.severity,
+            last_seen = excluded.last_seen,
+            cameras = excluded.cameras,
+            zones = excluded.zones,
+            entities = excluded.entities,
+            event_count = excluded.event_count,
+            dossier_json = excluded.dossier_json,
+            updated_at = excluded.updated_at
+        """
+        try:
+            with connection:
+                connection.executemany(statement, records)
+            return len(records)
+        except sqlite3.Error as exc:
+            log.error(
+                "could not write incidents", extra={"vantage_fields": {"error": str(exc)}}
+            )
+            return 0
+
+    def incidents(self, state: str | None = None, limit: int = 50) -> list[dict[str, Any]]:
+        """Query stored incidents with optional state filter."""
+        connection = self._require()
+        params: list[Any] = []
+        where = ""
+        if state:
+            where = "WHERE state = ?"
+            params.append(state.lower())
+        params.append(limit)
+        cursor = connection.execute(
+            f"SELECT * FROM incidents {where} ORDER BY last_seen DESC LIMIT ?",
+            params,
+        )
+        return [dict(row) for row in cursor.fetchall()]
+
+    def get_incident(self, incident_id: str) -> dict[str, Any] | None:
+        """Lookup a single incident by ID."""
+        connection = self._require()
+        cursor = connection.execute(
+            "SELECT * FROM incidents WHERE incident_id = ?",
+            [incident_id],
+        )
+        row = cursor.fetchone()
+        return dict(row) if row else None
+
+    def save_zone(self, zone_dict: dict[str, Any]) -> None:
+        """Persist or update an operator-defined polygonal geofence zone."""
+        con = self._require()
+        polygon = zone_dict.get("polygon") or zone_dict.get("polygon_vertices") or []
+        rule_config = zone_dict.get("rule_config") or {}
+
+        with con:
+            con.execute(
+                """
+                INSERT INTO zones (
+                    zone_id, name, camera_id, zone_type, polygon_json, rule_config_json, severity, color, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(zone_id) DO UPDATE SET
+                    name = excluded.name,
+                    camera_id = excluded.camera_id,
+                    zone_type = excluded.zone_type,
+                    polygon_json = excluded.polygon_json,
+                    rule_config_json = excluded.rule_config_json,
+                    severity = excluded.severity,
+                    color = excluded.color,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    str(zone_dict["zone_id"]),
+                    str(zone_dict.get("name", zone_dict["zone_id"])),
+                    str(zone_dict.get("camera_id", "all")),
+                    str(zone_dict.get("zone_type", "exclusion")),
+                    json.dumps(polygon),
+                    json.dumps(rule_config),
+                    str(zone_dict.get("severity", "alert")),
+                    str(zone_dict.get("color", "#ff3b30")),
+                    float(zone_dict.get("updated_at", time.time())),
+                ),
+            )
+
+    def delete_zone(self, zone_id: str) -> None:
+        """Remove a geofence zone by ID."""
+        con = self._require()
+        with con:
+            con.execute("DELETE FROM zones WHERE zone_id = ?", (zone_id,))
+
+    def list_zones(self, camera_id: str | None = None) -> list[dict[str, Any]]:
+        """List all stored geofence zones, optionally filtered by camera."""
+        con = self._require()
+        query = "SELECT * FROM zones"
+        params: tuple[Any, ...] = ()
+        if camera_id:
+            query += " WHERE camera_id = ? OR camera_id = 'all'"
+            params = (camera_id,)
+        query += " ORDER BY updated_at DESC"
+
+        cursor = con.execute(query, params)
+        results: list[dict[str, Any]] = []
+        for row in cursor.fetchall():
+            try:
+                poly = json.loads(row["polygon_json"])
+            except Exception:
+                poly = []
+            try:
+                cfg = json.loads(row["rule_config_json"])
+            except Exception:
+                cfg = {}
+
+            results.append(
+                {
+                    "zone_id": row["zone_id"],
+                    "name": row["name"],
+                    "camera_id": row["camera_id"],
+                    "zone_type": row["zone_type"],
+                    "polygon": poly,
+                    "rule_config": cfg,
+                    "severity": row["severity"],
+                    "color": row["color"],
+                    "updated_at": row["updated_at"],
+                }
+            )
+        return results
+
+    def get_zone(self, zone_id: str) -> dict[str, Any] | None:
+        """Fetch a specific geofence zone by ID."""
+        con = self._require()
+        cursor = con.execute("SELECT * FROM zones WHERE zone_id = ?", (zone_id,))
+        row = cursor.fetchone()
+        if not row:
+            return None
+        try:
+            poly = json.loads(row["polygon_json"])
+        except Exception:
+            poly = []
+        try:
+            cfg = json.loads(row["rule_config_json"])
+        except Exception:
+            cfg = {}
+
+        return {
+            "zone_id": row["zone_id"],
+            "name": row["name"],
+            "camera_id": row["camera_id"],
+            "zone_type": row["zone_type"],
+            "polygon": poly,
+            "rule_config": cfg,
+            "severity": row["severity"],
+            "color": row["color"],
+            "updated_at": row["updated_at"],
+        }
 
     def vacuum(self) -> None:
         """Reclaim space after a large prune.

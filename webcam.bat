@@ -10,12 +10,17 @@ REM      webcam.bat pose       same, said explicitly
 REM      webcam.bat activity   pose plus activity recognition, tuned to demo
 REM      webcam.bat objects    365-class detection + tracking, no pose
 REM      webcam.bat plain      detection only, no tracking and no pose
-REM      webcam.bat watch      dashboard in the browser: live view, history,
-REM                            traffic charts and events. Recording is on.
+REM      webcam.bat watch      dashboard in the browser: live view, incidents,
+REM                            trends, associations and search. Recording is on.
 REM      webcam.bat identity   tracking plus face identification (opt-in)
 REM      webcam.bat enroll     add a person to the identity gallery
 REM      webcam.bat who        list who is enrolled
 REM      webcam.bat checks     no camera: score tracker, activity and spatial
+REM
+REM  For several cameras at once - cross-camera identity, the floor plan and
+REM  the 3D twin - use the facility pipeline instead:
+REM
+REM      vantage facility --cameras front=webcam:0 yard=rtsp://host/stream
 REM
 REM  The detection modes use different detectors on purpose, and the reason is
 REM  measured rather than assumed. Pose costs about 5 ms per person on the
@@ -143,7 +148,11 @@ if /I "%MODE%"=="watch" (
     REM was actually reading. Measured: it also drops ~30%% of frames early on,
     REM because encoding a window and a JPEG stream from the same 33 ms budget
     REM does not fit.
-    set "MODE_FLAGS=--track --pose --dashboard --store --no-display"
+    REM Relationship tracking is off by default across the platform because it
+    REM accumulates state about pairs of entities for as long as the run lasts.
+    REM Typing "watch" is that opt-in: this mode exists to show the whole
+    REM console, and the Intelligence workspace has nothing in it otherwise.
+    set "MODE_FLAGS=--track --pose --dashboard --store --no-display --set relationships.enabled=true"
 )
 
 if not defined VANTAGE_SOURCE   set "VANTAGE_SOURCE=webcam:0"
@@ -195,8 +204,10 @@ if /I "%MODE%"=="watch" (
     echo.
     echo   There is no video window in this mode - the page is the interface,
     echo   and it shows the camera with the boxes and skeletons drawn on it.
-    echo   Recording is on, so the traffic chart and event list fill up as it
+    echo   Recording is on, so Trends, Incidents and Investigate fill up as it
     echo   runs. On a fresh database they start empty and say so.
+    echo.
+    echo   Twin needs several cameras and says so: vantage facility --cameras ...
     echo.
     echo   To stop: press Ctrl+C here, or close this console window.
     echo.

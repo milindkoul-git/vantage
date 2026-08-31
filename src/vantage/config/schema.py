@@ -856,6 +856,74 @@ class AnalyticsConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class IncidentsConfig:
+    """Grouping raised events into situational incidents.
+
+    Purely derived: it reads the events the event engine already raises and
+    needs no model, no extra inference and no second pass over the frame. On
+    whenever events are, because a stream of individual alerts with nothing
+    joining them is what an operator has to do in their head otherwise.
+
+    The weights and thresholds live in
+    :class:`~vantage.incident.config.IncidentCorrelatorConfig`; what is exposed
+    here is the decision to run it at all, plus the two timeouts an operator
+    actually tunes per site.
+    """
+
+    enabled: bool = True
+
+    attach_threshold: float = 0.65
+    """Correlation score above which an event joins an existing incident
+    outright. Below :attr:`candidate_threshold` it starts a new one; between the
+    two it starts a new one *and* records the link on both, because a guess
+    recorded as a certainty is worse than two incidents an operator can merge."""
+
+    candidate_threshold: float = 0.35
+    quiescent_timeout_s: float = 60.0
+    resolution_timeout_s: float = 300.0
+
+    def __post_init__(self) -> None:
+        if not 0.0 < self.candidate_threshold < self.attach_threshold <= 1.0:
+            raise ConfigError(
+                f"incidents thresholds must satisfy 0 < candidate ({self.candidate_threshold}) "
+                f"< attach ({self.attach_threshold}) <= 1"
+            )
+        if self.quiescent_timeout_s <= 0:
+            raise ConfigError("incidents.quiescent_timeout_s must be positive")
+        if self.resolution_timeout_s <= self.quiescent_timeout_s:
+            raise ConfigError(
+                f"incidents.resolution_timeout_s ({self.resolution_timeout_s}) must exceed "
+                f"quiescent_timeout_s ({self.quiescent_timeout_s}): an incident cannot resolve "
+                "before it has gone quiet"
+            )
+
+
+@dataclass(frozen=True, slots=True)
+class RelationshipsConfig:
+    """Which anonymous entities keep appearing together, and how strongly.
+
+    Built from tracked positions only - the ids are the tracker's anonymous
+    ``person_17``, never a name - and it is off by default because unlike
+    incidents it accumulates state about pairs across a whole session, which is
+    a thing a deployment should opt into rather than inherit.
+    """
+
+    enabled: bool = False
+
+    min_strength: float = 0.0
+    """Floor for an edge to be reported at all."""
+
+    persist_interval_s: float = 30.0
+    """How often the graph is flushed to the store, when there is one."""
+
+    def __post_init__(self) -> None:
+        if not 0.0 <= self.min_strength <= 1.0:
+            raise ConfigError("relationships.min_strength must be between 0 and 1")
+        if self.persist_interval_s <= 0:
+            raise ConfigError("relationships.persist_interval_s must be positive")
+
+
+@dataclass(frozen=True, slots=True)
 class IdentityConfig:
     """Optional identity resolution. Off by default, and deliberately so.
 
@@ -1039,6 +1107,8 @@ class VantageConfig:
     storage: StorageConfig = field(default_factory=StorageConfig)
     dashboard: DashboardConfig = field(default_factory=DashboardConfig)
     identity: IdentityConfig = field(default_factory=IdentityConfig)
+    incidents: IncidentsConfig = field(default_factory=IncidentsConfig)
+    relationships: RelationshipsConfig = field(default_factory=RelationshipsConfig)
     analytics: AnalyticsConfig = field(default_factory=AnalyticsConfig)
     display: DisplayConfig = field(default_factory=DisplayConfig)
 
@@ -1064,6 +1134,18 @@ class VantageConfig:
                 "existing anonymous entity into a name, and without tracks there is "
                 "no entity to resolve. This is the seam the spec asked for - identity "
                 "attaches to tracking, and tracking never depends on identity."
+            )
+        if self.incidents.enabled and not self.events.enabled:
+            raise ConfigError(
+                "incidents.enabled requires events.enabled: an incident is a group of "
+                "raised events and has no other input. Enable events, or set "
+                "incidents.enabled: false."
+            )
+        if self.relationships.enabled and not (self.tracking.enabled and self.state.enabled):
+            raise ConfigError(
+                "relationships.enabled requires tracking.enabled and state.enabled: the "
+                "graph is built from where tracked entities are and how they are moving. "
+                "Pass --track, or set relationships.enabled: false."
             )
         if self.pose.enabled and not self.tracking.enabled:
             raise ConfigError(

@@ -23,7 +23,7 @@ from collections.abc import Sequence
 from pathlib import Path
 
 from vantage import __version__
-from vantage.core.errors import VantageError
+from vantage.core.errors import ConfigError, VantageError
 from vantage.core.lifecycle import ShutdownController
 from vantage.core.logging import configure_logging, get_logger
 
@@ -429,6 +429,32 @@ def build_parser() -> argparse.ArgumentParser:
     dashboard.add_argument("--port", type=int, default=None)
     dashboard.add_argument("--host", default=None)
 
+    facility = sub.add_parser(
+        "facility",
+        parents=[common],
+        help="run the multi-camera facility pipeline across several sources",
+    )
+    facility.add_argument(
+        "--cameras",
+        nargs="+",
+        required=True,
+        metavar="ID=URI",
+        help=(
+            "camera_id=source pairs, e.g. entrance=rtsp://... yard=webcam:1 "
+            "lobby=C:/clips/lobby.mp4. Required: there is no sensible default "
+            "set of cameras, and one invented here would fail on every machine "
+            "but the one it was written on."
+        ),
+    )
+    facility.add_argument("--port", type=int, default=None, help="dashboard port")
+    facility.add_argument("--host", default=None)
+    facility.add_argument("--db", default=None, help="store path (default: storage.path)")
+    facility.add_argument("--model", default=None, help="detection model")
+    facility.add_argument("--conf", type=float, default=None, help="detection confidence")
+    facility.add_argument(
+        "--no-pose", action="store_true", help="skip pose estimation on every camera"
+    )
+
     history = sub.add_parser(
         "history", parents=[common], help="query the stored observations and events"
     )
@@ -531,6 +557,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             return _cmd_history(args)
         if command == "dashboard":
             return _cmd_dashboard(args)
+        if command == "facility":
+            return _cmd_facility(args)
         if command == "analytics":
             return _cmd_analytics(args)
         if command == "identity":
@@ -880,6 +908,88 @@ def _cmd_dashboard(args: argparse.Namespace) -> int:
         server.serve_forever()
     finally:
         store.close()
+    return EXIT_OK
+
+
+def _cmd_facility(args: argparse.Namespace) -> int:
+    """Run several cameras at once, with the facility-wide intelligence on top.
+
+    The single-camera ``run`` command sees one scene; this one resolves the same
+    person across cameras, keeps a facility relationship graph and a floor-plan
+    view, and serves all of it from one dashboard. It is a separate command
+    rather than a flag because it is a different pipeline, not a different
+    setting on this one.
+    """
+    import dataclasses
+    import time
+
+    from vantage.config.loader import load_config
+    from vantage.dashboard.api import DashboardApi
+    from vantage.dashboard.server import DashboardServer
+    from vantage.multicam.pipeline import MultiCameraPipeline
+    from vantage.storage.sqlite_store import SqliteStore
+
+    config = load_config(args.config, overrides=args.overrides)
+    settings = config.dashboard
+    if args.port is not None:
+        settings = dataclasses.replace(settings, port=args.port)
+    if args.host is not None:
+        settings = dataclasses.replace(settings, host=args.host)
+
+    sources: dict[str, str] = {}
+    for pair in args.cameras:
+        if "=" not in pair:
+            raise ConfigError(
+                f"--cameras takes ID=URI pairs; {pair!r} has no '='. "
+                "Example: --cameras entrance=webcam:0 yard=rtsp://host/stream"
+            )
+        camera_id, uri = pair.split("=", 1)
+        camera_id, uri = camera_id.strip(), uri.strip()
+        if not camera_id or not uri:
+            raise ConfigError(f"--cameras pair {pair!r} has an empty id or uri")
+        if camera_id in sources:
+            raise ConfigError(f"camera id {camera_id!r} given twice")
+        sources[camera_id] = uri
+
+    store = None
+    if config.storage.enabled or args.db:
+        store = SqliteStore(args.db or config.storage.path)
+
+    pipeline = MultiCameraPipeline(
+        camera_sources=sources,
+        store=store,
+        model=args.model or config.detection.model,
+        conf_threshold=args.conf if args.conf is not None else config.detection.confidence,
+        enable_pose=not args.no_pose,
+    )
+    api = DashboardApi(
+        store=store,
+        feed=pipeline.grid_feed,
+        radar_map=pipeline.radar_map,
+        spatial_twin=pipeline.spatial_twin,
+        zone_registry=pipeline.zone_registry,
+        pipeline=pipeline,
+        camera_id="facility",
+    )
+    server = DashboardServer(
+        api=api, feed=pipeline.grid_feed, host=settings.host, port=settings.port
+    )
+    url = server.start()
+    pipeline.start()
+    print(f"Facility dashboard: {url}")
+    for camera_id, uri in sources.items():
+        print(f"  {camera_id}: {uri}")
+    print("  Ctrl+C to stop.")
+    try:
+        while True:
+            time.sleep(1.0)
+    except KeyboardInterrupt:
+        print("\nStopping.")
+    finally:
+        pipeline.stop()
+        server.stop()
+        if store is not None:
+            store.close()
     return EXIT_OK
 
 
