@@ -127,4 +127,11 @@ jobs:
         # change to the TypeScript that nobody rebuilt would ship the previous
         # page - which is exactly the kind of drift the whole contract suite
         # exists to catch, arriving through the one door it cannot see.
+        #
+        # A byte comparison, which is only fair because the build is
+        # reproducible: `npm ci` pins the lockfile and the node version is
+        # pinned above, so an unchanged tree rebuilds identically. A toolchain
+        # bump that changes the output will fail here and wants a rebuild
+        # committed with it, which is the correct outcome rather than an
+        # inconvenience - the artefact in the repository is the one that ships.
         run: git diff --exit-code --stat -- src/vantage/dashboard/static
