@@ -9,10 +9,10 @@ interface GraphProps {
    * How many entities to lay out at once.
    *
    * A facility that has been running for an afternoon produces hundreds of
-   * pairs, and a force layout of three hundred cards is a solid disc: every
-   * node overlaps every other and nothing can be read or clicked. The graph
-   * shows the strongest sub-graph and says so; the full ranking is in the list
-   * beside it, which stays readable at any size.
+   * pairs, and no layout makes three hundred of these cards readable: each is
+   * 120x150, so two dozen already claim half the panel whatever the algorithm
+   * does. The graph shows the strongest sub-graph and says so in its legend;
+   * the full ranking is in the list beside it, which stays readable at any size.
    */
   maxNodes?: number;
 }
@@ -39,6 +39,152 @@ function seededRot(seed: string): number {
 
 const CARD_W = 120;
 const CARD_H = 150;
+
+/**
+ * A Fruchterman-Reingold relaxation, run once when the graph changes.
+ *
+ * This component was called a force-directed graph and did no force layout: it
+ * placed every node on one circle and left it there, so anything past a handful
+ * of entities rendered as a ring of overlapping cards. The pass below is the
+ * layout the name promised.
+ *
+ * Run to completion synchronously rather than animated per frame. The graph is
+ * repolled every fifteen seconds, and cards drifting into place each time would
+ * make a panel an operator is trying to read move under them; a settled layout
+ * that changes when the data does is the more useful behaviour. A few hundred
+ * iterations over a few dozen nodes is well under a frame's budget.
+ */
+function relax(
+  nodes: NodeState[],
+  edges: Array<{ source: string; target: string; active_strength: number }>,
+  width: number,
+  height: number,
+): void {
+  const count = nodes.length;
+  if (count < 2) return;
+
+  const index = new Map(nodes.map((node, i) => [node.id, i]));
+  // The ideal separation for this many nodes in this much room, which is what
+  // makes both forces scale-free: k is the distance at which they balance.
+  // Scaled down from the full area because the nodes are cards rather than
+  // points - at the textbook value they push each other flat against the panel
+  // edges and leave the middle empty.
+  const k = Math.sqrt((width * height * 0.45) / count);
+  const centreX = width / 2 - CARD_W / 2;
+  const centreY = height / 2 - CARD_H / 2;
+  const ITERATIONS = 300;
+
+  for (let step = 0; step < ITERATIONS; step += 1) {
+    // Cooling: large corrections first, then settling, so the layout converges
+    // instead of oscillating between two equally bad arrangements.
+    const temperature = k * 0.25 * (1 - step / ITERATIONS);
+    const dx = new Float64Array(count);
+    const dy = new Float64Array(count);
+
+    for (let i = 0; i < count; i += 1) {
+      for (let j = i + 1; j < count; j += 1) {
+        let vx = nodes[i].x - nodes[j].x;
+        let vy = nodes[i].y - nodes[j].y;
+        let distance = Math.hypot(vx, vy);
+        if (distance < 1e-3) {
+          // Two nodes exactly on top of each other have no direction to
+          // separate along; nudge them deterministically by index so the layout
+          // stays reproducible rather than depending on a random seed.
+          vx = ((i % 7) - 3) * 0.5 + 0.1;
+          vy = ((j % 5) - 2) * 0.5 + 0.1;
+          distance = Math.hypot(vx, vy);
+        }
+        const repulsion = (k * k) / distance;
+        const ux = (vx / distance) * repulsion;
+        const uy = (vy / distance) * repulsion;
+        dx[i] += ux;
+        dy[i] += uy;
+        dx[j] -= ux;
+        dy[j] -= uy;
+      }
+    }
+
+    for (const edge of edges) {
+      const a = index.get(edge.source);
+      const b = index.get(edge.target);
+      if (a === undefined || b === undefined) continue;
+      const vx = nodes[a].x - nodes[b].x;
+      const vy = nodes[a].y - nodes[b].y;
+      const distance = Math.max(1e-3, Math.hypot(vx, vy));
+      // Stronger associations pull harder, so the graph's shape carries the
+      // same information the edge widths do.
+      const attraction = ((distance * distance) / k) * (0.5 + edge.active_strength);
+      const ux = (vx / distance) * attraction;
+      const uy = (vy / distance) * attraction;
+      dx[a] -= ux;
+      dy[a] -= uy;
+      dx[b] += ux;
+      dy[b] += uy;
+    }
+
+    // Gravity toward the middle. Without it the components of a sparse graph -
+    // and a relationship graph is mostly sparse - have nothing holding them
+    // together and drift until the bounds clamp stops them.
+    for (let i = 0; i < count; i += 1) {
+      dx[i] += (centreX - nodes[i].x) * 0.08;
+      dy[i] += (centreY - nodes[i].y) * 0.08;
+    }
+
+    for (let i = 0; i < count; i += 1) {
+      const magnitude = Math.max(1e-6, Math.hypot(dx[i], dy[i]));
+      const limit = Math.min(magnitude, temperature);
+      nodes[i].x += (dx[i] / magnitude) * limit;
+      nodes[i].y += (dy[i] / magnitude) * limit;
+      // Keep whole cards on screen: a node placed at the panel edge would put
+      // most of its card outside it.
+      nodes[i].x = Math.max(8, Math.min(width - CARD_W - 8, nodes[i].x));
+      nodes[i].y = Math.max(8, Math.min(height - CARD_H - 8, nodes[i].y));
+    }
+  }
+
+  separate(nodes, width, height);
+}
+
+/**
+ * Push apart any two cards that still overlap after relaxation.
+ *
+ * The force pass treats nodes as points, so a tightly connected pair is pulled
+ * closer than two 120x150 cards can sit without covering each other - and a card
+ * you cannot read is worse than one slightly out of position. Separation is on
+ * the axis of least penetration, so a pair that overlaps only at the corner moves
+ * the short way rather than being flung across the panel.
+ */
+function separate(nodes: NodeState[], width: number, height: number): void {
+  const PADDING = 10;
+  for (let pass = 0; pass < 24; pass += 1) {
+    let moved = false;
+    for (let i = 0; i < nodes.length; i += 1) {
+      for (let j = i + 1; j < nodes.length; j += 1) {
+        const a = nodes[i];
+        const b = nodes[j];
+        const overlapX = CARD_W + PADDING - Math.abs(a.x - b.x);
+        const overlapY = CARD_H + PADDING - Math.abs(a.y - b.y);
+        if (overlapX <= 0 || overlapY <= 0) continue;
+
+        moved = true;
+        if (overlapX < overlapY) {
+          const shift = (overlapX / 2) * (a.x <= b.x ? -1 : 1);
+          a.x += shift;
+          b.x -= shift;
+        } else {
+          const shift = (overlapY / 2) * (a.y <= b.y ? -1 : 1);
+          a.y += shift;
+          b.y -= shift;
+        }
+        a.x = Math.max(8, Math.min(width - CARD_W - 8, a.x));
+        a.y = Math.max(8, Math.min(height - CARD_H - 8, a.y));
+        b.x = Math.max(8, Math.min(width - CARD_W - 8, b.x));
+        b.y = Math.max(8, Math.min(height - CARD_H - 8, b.y));
+      }
+    }
+    if (!moved) return;
+  }
+}
 
 function cardCenter(node: NodeState) {
   return { x: node.x + CARD_W / 2, y: node.y + CARD_H / 2 };
@@ -94,7 +240,7 @@ const BrassPin: React.FC<{ hasIncident: boolean }> = ({ hasIncident }) => (
   </div>
 );
 
-export const ForceDirectedGraph: React.FC<GraphProps> = ({ graphData, maxNodes = 36 }) => {
+export const ForceDirectedGraph: React.FC<GraphProps> = ({ graphData, maxNodes = 18 }) => {
   // Take the strongest edges, then the entities they touch: picking nodes first
   // would leave most of them with nothing drawn between them.
   const view = React.useMemo(() => {
@@ -150,16 +296,25 @@ export const ForceDirectedGraph: React.FC<GraphProps> = ({ graphData, maxNodes =
     }
     const w = containerRef.current.clientWidth || 900;
     const h = containerRef.current.clientHeight || 600;
-    const r = Math.min(w, h) * 0.3;
+    const count = trimmed!.nodes.length;
+
+    // Seed on a ring wide enough that the cards do not already overlap, then
+    // relax. Starting them all inside a fixed 0.3-of-the-panel circle put a
+    // dozen 120px cards on 30px of arc each, and since nothing then moved them,
+    // that is exactly how they stayed: a solid disc with the graph inside it.
     const cx = w / 2 - CARD_W / 2;
     const cy = h / 2 - CARD_H / 2;
+    const seedRadius = Math.max(
+      Math.min(w, h) * 0.28,
+      (count * CARD_W * 0.85) / (2 * Math.PI),
+    );
 
     const initialized: NodeState[] = trimmed!.nodes.map((n, i) => {
-      const angle = (i / Math.max(1, trimmed!.nodes.length)) * Math.PI * 2;
+      const angle = (i / Math.max(1, count)) * Math.PI * 2;
       return {
         id: n.id,
-        x: cx + Math.cos(angle) * r,
-        y: cy + Math.sin(angle) * r,
+        x: cx + Math.cos(angle) * seedRadius,
+        y: cy + Math.sin(angle) * seedRadius,
         vx: 0,
         vy: 0,
         degree: n.degree,
@@ -168,6 +323,7 @@ export const ForceDirectedGraph: React.FC<GraphProps> = ({ graphData, maxNodes =
       };
     });
 
+    relax(initialized, trimmed!.edges, w, h);
     nodesRef.current = initialized;
     setNodes([...initialized]);
     // eslint-disable-next-line react-hooks/exhaustive-deps
