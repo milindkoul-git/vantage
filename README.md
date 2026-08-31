@@ -688,6 +688,78 @@ runtime.
 
 ---
 
+## 2m. What Phases 12-19 deliver
+
+Everything above watches one camera. These phases add the layer on top of it:
+several cameras at once, the same person recognised across them, groups of
+events read as one situation, and the pairs of people who keep appearing
+together.
+
+**Incidents (19).** An event on its own is a line in a log. The correlator scores
+each new event against every open incident on five weighted factors — entity
+overlap, temporal proximity, spatial continuity, a known association between the
+entities, and behavioural match — less a penalty for continuity it cannot explain,
+such as a camera-to-camera transition faster than a person can walk. Three bands,
+not two: above 0.65 the event joins outright, below 0.35 it opens a new incident,
+and between them it opens a new incident *and* records the link on both, because a
+guess recorded as a certainty is worse than two incidents an operator can merge.
+The winning breakdown is stored on the incident, so the dossier answers "why is
+this one incident and not two" with the numbers that actually decided it.
+
+**Relationships (18).** Which anonymous entities keep appearing together, scored
+from co-occurrence, proximity, following and interaction duration, with an
+exponential decay so a strong association from an hour ago is not reported as a
+strong association now. Candidate pairs are gated by scene-graph proximity rather
+than compared all-to-all. Off by default: unlike incidents it accumulates state
+about *pairs* across a whole session, which a deployment should opt into. The
+identifiers are the tracker's own — `person_17` — and nothing here resolves or
+requires a name.
+
+**Multi-camera (12-17).** Cross-camera re-identification on appearance
+descriptors, a transient per-camera scene graph (interactions, groups, objects
+whose owner has walked away), an overhead floor plan and a 3D facility view,
+operator-drawn geofence zones, and RTSP/USB connectors that can be attached and
+detached while running.
+
+**Two commands, and they are different pipelines.**
+
+```bash
+vantage run --source webcam:0 --track --pose --dashboard --store   # one camera
+vantage facility --cameras front=webcam:0 yard=rtsp://host/stream  # several
+```
+
+`webcam.bat watch` and the packaged executable both take the first form.
+
+### What each mode actually has
+
+Nothing in the table below is a plan. Where a workspace is unavailable the page
+says so and names the flag or the command that would give it something — which is
+the whole difference between "the floor is clear" and "nothing is watching the
+floor".
+
+| Dashboard workspace | `vantage run` | `vantage facility` |
+| :--- | :--- | :--- |
+| Live — stream, tracked entities, events | yes | yes (camera grid) |
+| Incidents — correlated situations | yes | yes |
+| Trends — hourly baselines and anomalies | yes, with `--store` | yes, with a store |
+| Intelligence — association graph | with `relationships.enabled` | yes |
+| Intelligence — scene topology | no: needs the facility pipeline | yes |
+| Investigate — event log, ontology search | yes, with `--store` | yes |
+| Twin — 3D facility and overhead plan | no: needs cross-camera positions | yes |
+
+**The facility geometry is derived, and says so.** The twin lays out one sector
+per camera it is given and computes each mount's pitch, range and field of view
+from the sector it covers. It is a declaration of which part of the floor each
+camera watches, not a survey of a building: the projection inside a sector is
+affine, so it will put two people in different rooms in different places but will
+not measure the distance between them. With no cameras it is empty and the
+dashboard reports that there is no facility model.
+
+**1079 tests.**
+
+
+---
+
 ## 3. Quick start
 
 Requires Python 3.11+ (developed on 3.13.1).
@@ -2019,8 +2091,25 @@ than assumed.
 
 ## 8. Known limitations
 
-**Scope.** No multi-camera orchestration and no cross-camera re-identification. That is
-phase 12.
+**Cross-camera identity is appearance-only.** `vantage facility` re-identifies a
+person across cameras from an HSV appearance descriptor and a spatial-temporal
+transition prior. Two people in similar clothing under similar lighting will be
+confused, and a change of jacket breaks the association. It is not face
+recognition and does not become face recognition.
+
+**The facility geometry is configured, not surveyed.** The twin lays out one
+sector per camera and maps each camera's ground plane onto its sector affinely.
+There is no homography and no lens calibration, so the metres it reports are the
+metres of that declared layout. It will put two people in different rooms in
+different places; it will not tell you how far apart they are. With no cameras
+attached it is empty rather than furnished, and the dashboard says so.
+
+**Relationship scores mean co-appearance, not intent.** The vocabulary is
+deliberately observational — `co_occurrence`, `recurrent_proximity`,
+`lagged_trajectory_alignment` — and no part of it labels a relationship as
+friendship, collusion or pursuit. A high score says two anonymous ids keep being
+in frame together, which is a fact about the footage rather than about the
+people.
 
 **Analytics needs about four weeks of history before it can say anything.** Below three
 observed samples, a slot is not judged at all, and the run reports how many buckets it
@@ -2158,15 +2247,21 @@ without re-testing that exact path** — the comment in `openvino_backend.py` sa
 
 **Detection runs on the consumer thread.** Inference is synchronous inside the frame loop,
 so a slow model directly reduces delivered FPS on live sources (the queue then drops frames
-to keep latency bounded, exactly as designed). Moving inference to its own stage with its
-own queue is a Phase 12 concern; `detection.interval` is the lever until then.
+to keep latency bounded, exactly as designed). `detection.interval` and the adaptive
+governor are the levers. `AsyncInferenceStage` exists and is tested — it moves detection
+behind its own bounded queue — but **no pipeline uses it yet**: it is a component, not a
+mode you can switch on, and wiring it would need the governor's cost model reworked around
+a detector that no longer runs on the loop it is pacing.
 
 **GPU results differ slightly from CPU.** Intel GPUs execute fp16 by default. Marginal
 low-confidence detections can appear on one and not the other. Reported in the `PREC`
 column rather than papered over.
 
-**Only YOLOX is implemented.** The adapter seam exists for RT-DETR and D-FINE, but adding
-them is future work, not something already half-built.
+**Three detector families are implemented**, and each is a deliberate choice rather than a
+menu: YOLOX for the live pipeline, D-FINE / obj365 for 365-class detection, and Grounding
+DINO behind `vantage discover` for open-vocabulary queries — the last as a separate command
+because it costs seconds per prompt against the live detector's milliseconds. RT-DETR has a
+seam and no adapter; that is future work, not something already half-built.
 
 **`yolox-s` is catalogued but not realtime here.** 640x640 input on this hardware is an
 accuracy option for offline analysis, not for live camera work.

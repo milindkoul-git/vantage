@@ -56,8 +56,17 @@ export interface LiveEvent {
 
 export interface LiveStats {
   fps: number;
-  dropped: number;
+  /** Human-readable name of what is being watched. */
   source: string;
+  /**
+   * Frames the ingestion queue had to drop. Single-camera runs only: the
+   * facility pipeline paces each camera independently and has no single queue
+   * to drop from, so it sends the fields below instead. Optional rather than
+   * defaulted, so a panel renders an em dash rather than a confident zero.
+   */
+  dropped?: number;
+  active_cameras?: number;
+  total_entities?: number;
 }
 
 /** One entry of `StageRegistry.to_dict()`. Field names are load-bearing. */

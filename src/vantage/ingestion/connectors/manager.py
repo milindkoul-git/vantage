@@ -9,7 +9,6 @@ from vantage.config.schema import SourceConfig
 from vantage.core.logging import get_logger
 from vantage.dashboard.live import LiveFeed
 from vantage.ingestion.registry import create_source
-from vantage.spatial.twin import CameraMount3D
 from vantage.state.estimator import StateEstimator
 from vantage.tracking.bytetrack import ByteTracker, TrackerParams
 
@@ -76,20 +75,12 @@ class CameraConnectorManager:
                     worker.thread = t
                     t.start()
 
-                # Register in 3D Spatial Twin
-                if hasattr(pipeline, "spatial_twin") and pipeline.spatial_twin is not None:
-                    pipeline.spatial_twin.camera_mounts[camera_id] = CameraMount3D(
-                        camera_id=camera_id,
-                        name=name,
-                        x=mount_x,
-                        y=mount_y,
-                        z=mount_z,
-                        yaw_deg=yaw_deg,
-                        pitch_deg=pitch_deg,
-                        fov_deg=fov_deg,
-                        range_m=range_m,
-                        color=color,
-                    )
+                # Give it a sector in the twin. Through add_camera rather than
+                # straight into the mounts dict: a mount with no sector behind it
+                # projects every entity onto the whole floor, which puts them
+                # somewhere plausible and wrong.
+                if getattr(pipeline, "spatial_twin", None) is not None:
+                    pipeline.spatial_twin.add_camera(camera_id, name=name)
 
                 log.info(f"Dynamically attached camera '{camera_id}' ({name}) at {uri}")
                 return {
@@ -118,13 +109,13 @@ class CameraConnectorManager:
             try:
                 worker.is_running = False
                 worker.source.close()
-                if hasattr(worker, "_thread") and worker._thread is not None:
-                    worker._thread.join(timeout=1.5)
+                if worker.thread is not None:
+                    worker.thread.join(timeout=1.5)
 
                 del pipeline.workers[camera_id]
 
-                if hasattr(pipeline, "spatial_twin") and pipeline.spatial_twin is not None:
-                    pipeline.spatial_twin.camera_mounts.pop(camera_id, None)
+                if getattr(pipeline, "spatial_twin", None) is not None:
+                    pipeline.spatial_twin.remove_camera(camera_id)
 
                 log.info(f"Dynamically detached camera '{camera_id}'")
                 return {

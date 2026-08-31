@@ -56,9 +56,9 @@ export const DigitalTwinWorkspace: React.FC<{
           query={twinQuery}
           what="the digital twin"
           unavailableHint={NEEDS_FACILITY}
-          emptyWhen={(data) => !data.facility}
+          emptyWhen={(data) => (data.facility?.rooms.length ?? 0) === 0}
           emptyLabel="No facility model"
-          emptyHint="The twin is attached but has no rooms defined yet."
+          emptyHint="The twin lays out one sector per camera. It has no cameras yet."
         >
           {(data) => (
             <Suspense fallback={<Loading what="the 3D renderer" />}>

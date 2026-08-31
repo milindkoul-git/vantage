@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import math
 import time
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from vantage.spatial.geometry.coordinates import Point2D
+from vantage.spatial.projection import ConfiguredSectorProjection
 
 if TYPE_CHECKING:
     from vantage.events.zone_registry import ZoneRegistry
@@ -42,117 +44,164 @@ class CameraMount3D:
 
 
 class FacilitySpatialTwin:
-    """Manages the 3D metric coordinate system, facility layout, camera frustums, and entities."""
+    """The facility as metric geometry: sectors, camera mounts, and where people are.
 
-    def __init__(self, zone_registry: ZoneRegistry | None = None) -> None:
+    The layout is derived from the cameras it is given. Pass the ids of the
+    cameras actually running and it lays them out as a grid of sectors across the
+    configured floor area, one sector per camera, with a mount above each looking
+    into its own sector. Pass nothing and it is empty, and the dashboard reports
+    that there is no facility model rather than drawing one.
+
+    That is a change of kind from what this used to do. It shipped a specific
+    fictional building - four sectors named "Retail Showroom Floor", "Plaza &
+    Crosswalk", "Secure Transit Corridor" and "Main Entrance Vestibule", eight
+    interior wall segments, and four camera mounts keyed to the ids of a demo
+    recording - and produced it regardless of which cameras were connected.
+    ``project_camera_to_3d`` then branched on those same four id strings, so a
+    real deployment fell through to a generic mapping while the view showed a
+    building nobody had.
+
+    What it produces now is honest but coarse, and the coarseness is stated
+    rather than hidden: a sector grid is a declaration about which part of the
+    floor each camera watches, not a survey of the building, and the projection
+    inside each sector is affine rather than a calibrated homography. Rooms are
+    named after their camera because that is the only name anyone has given.
+    """
+
+    #: Sensible default extent when the caller does not know the building's size.
+    #: Chosen so that a grid of sectors is legible at the twin's default camera
+    #: distance; it is a canvas, not a measurement, and is overridable.
+    DEFAULT_WIDTH_M = 40.0
+    DEFAULT_DEPTH_M = 24.0
+    DEFAULT_HEIGHT_M = 4.5
+
+    def __init__(
+        self,
+        camera_ids: Sequence[str] = (),
+        *,
+        zone_registry: ZoneRegistry | None = None,
+        width_m: float = DEFAULT_WIDTH_M,
+        depth_m: float = DEFAULT_DEPTH_M,
+        height_m: float = DEFAULT_HEIGHT_M,
+    ) -> None:
+        if width_m <= 0 or depth_m <= 0 or height_m <= 0:
+            raise ValueError("facility dimensions must be positive")
+
         self.zone_registry = zone_registry
-        # Overall facility metric bounds (40m width x 24m depth x 4.5m ceiling)
-        self.width_m: float = 40.0
-        self.depth_m: float = 24.0
-        self.height_m: float = 4.5
+        self.width_m = width_m
+        self.depth_m = depth_m
+        self.height_m = height_m
 
-        # 3D Physical Camera Mounts across facility sectors
-        self.camera_mounts: dict[str, CameraMount3D] = {
-            "cam_01_retail": CameraMount3D(
-                camera_id="cam_01_retail",
-                name="Retail Showroom",
-                x=2.0,
-                y=3.4,
-                z=2.0,
-                yaw_deg=45.0,
-                pitch_deg=-28.0,
-                fov_deg=72.0,
-                range_m=16.0,
-                color="#00e5ff",
-            ),
-            "cam_02_crosswalk": CameraMount3D(
-                camera_id="cam_02_crosswalk",
-                name="Crosswalk Traffic",
-                x=38.0,
-                y=3.6,
-                z=2.0,
-                yaw_deg=-135.0,
-                pitch_deg=-25.0,
-                fov_deg=78.0,
-                range_m=18.0,
-                color="#ffb700",
-            ),
-            "cam_03_corridor": CameraMount3D(
-                camera_id="cam_03_corridor",
-                name="Corridor Walkway",
-                x=2.0,
-                y=3.2,
-                z=22.0,
-                yaw_deg=15.0,
-                pitch_deg=-22.0,
-                fov_deg=65.0,
-                range_m=20.0,
-                color="#00ffc8",
-            ),
-            "cam_04_doorway": CameraMount3D(
-                camera_id="cam_04_doorway",
-                name="Pedestrians Entry",
-                x=38.0,
-                y=3.2,
-                z=22.0,
-                yaw_deg=-145.0,
-                pitch_deg=-30.0,
-                fov_deg=68.0,
-                range_m=15.0,
-                color="#af52de",
-            ),
-        }
+        self.camera_mounts: dict[str, CameraMount3D] = {}
+        self.sectors: dict[str, ConfiguredSectorProjection] = {}
+        self.rooms: list[dict[str, Any]] = []
+        self.walls: list[list[float]] = []
 
-        # Facility Architecture: Rooms & Structural Partitions
-        self.rooms = [
-            {
-                "id": "sector_retail",
-                "name": "Retail Showroom Floor",
-                "bounds": [0.0, 0.0, 19.0, 11.5],  # x1, z1, x2, z2
-                "floor_color": "#161b26",
-                "wall_color": "#20293a",
-            },
-            {
-                "id": "sector_plaza",
-                "name": "Plaza & Crosswalk",
-                "bounds": [21.0, 0.0, 40.0, 11.5],
-                "floor_color": "#131822",
-                "wall_color": "#1c2436",
-            },
-            {
-                "id": "sector_corridor",
-                "name": "Secure Transit Corridor",
-                "bounds": [0.0, 12.5, 21.0, 24.0],
-                "floor_color": "#111620",
-                "wall_color": "#1a2233",
-            },
-            {
-                "id": "sector_doorway",
-                "name": "Main Entrance Vestibule",
-                "bounds": [21.0, 12.5, 40.0, 24.0],
-                "floor_color": "#141a24",
-                "wall_color": "#1e2738",
-            },
-        ]
+        for camera_id in camera_ids:
+            self.add_camera(camera_id)
 
-        # Architectural walls with doorways (segments: [x1, z1, x2, z2, height])
-        self.walls = [
-            # Outer perimeter
-            [0.0, 0.0, 40.0, 0.0, 3.8],
-            [40.0, 0.0, 40.0, 24.0, 3.8],
-            [40.0, 24.0, 0.0, 24.0, 3.8],
-            [0.0, 24.0, 0.0, 0.0, 3.8],
-            # Center dividing wall with corridor passage opening
-            [0.0, 12.0, 16.0, 12.0, 3.2],
-            [22.0, 12.0, 40.0, 12.0, 3.2],
-            # Vertical sector dividing wall with doorway opening
-            [20.0, 0.0, 20.0, 8.0, 3.2],
-            [20.0, 15.0, 20.0, 24.0, 3.2],
-        ]
-
-        # Entity 3D Positions & Motion Trails: global_id -> list of [x, y, z, wall_time]
+        # Entity 3D positions and motion trails: global_id -> [x, y, z, wall_time]
         self._entity_3d_trails: dict[str, list[tuple[float, float, float, float]]] = {}
         self._entity_3d_state: dict[str, dict[str, Any]] = {}
+
+    # -- layout -----------------------------------------------------------
+
+    def add_camera(self, camera_id: str, name: str | None = None) -> CameraMount3D:
+        """Give a camera a sector of the floor and a mount above it.
+
+        Adding a camera re-lays-out every sector, because the grid's shape
+        depends on how many there are. A camera attached mid-run therefore moves
+        the others, which is the honest consequence of the layout being derived
+        rather than surveyed: nothing here knows where the cameras really are.
+        """
+        if camera_id in self.camera_mounts:
+            return self.camera_mounts[camera_id]
+
+        ordered = [*self.camera_mounts, camera_id]
+        names = {cid: mount.name for cid, mount in self.camera_mounts.items()}
+        names[camera_id] = name or camera_id.replace("_", " ").title()
+
+        self.camera_mounts.clear()
+        self.sectors.clear()
+        self.rooms.clear()
+
+        columns = math.ceil(math.sqrt(len(ordered)))
+        rows = math.ceil(len(ordered) / columns)
+        sector_w = self.width_m / columns
+        sector_d = self.depth_m / rows
+        # A margin so adjacent sectors read as separate floors rather than one.
+        margin = min(sector_w, sector_d) * 0.04
+
+        for index, cid in enumerate(ordered):
+            column, row = index % columns, index // columns
+            x_min = column * sector_w + margin
+            x_max = (column + 1) * sector_w - margin
+            z_min = row * sector_d + margin
+            z_max = (row + 1) * sector_d - margin
+
+            self.sectors[cid] = ConfiguredSectorProjection(
+                x_min=x_min, x_max=x_max, z_min=z_min, z_max=z_max
+            )
+            self.rooms.append(
+                {
+                    "id": f"sector_{cid}",
+                    "name": names[cid],
+                    "bounds": [
+                        round(x_min, 2),
+                        round(z_min, 2),
+                        round(x_max, 2),
+                        round(z_max, 2),
+                    ],
+                    "floor_color": "#1C1916",
+                    "wall_color": "#2E2820",
+                }
+            )
+            # Mounted at the near edge of its own sector and aimed at the far
+            # edge, with the pitch, range and field of view that geometry
+            # implies. Derived rather than declared: these numbers describe the
+            # sector assignment, and the frustum drawn from them lands on the
+            # floor it claims to cover. Constants would draw a cone that stops
+            # short of its own sector or continues underground.
+            mount_height = round(min(3.5, self.height_m - 0.5), 2)
+            reach = z_max - z_min
+            half_width = (x_max - x_min) / 2
+            self.camera_mounts[cid] = CameraMount3D(
+                camera_id=cid,
+                name=names[cid],
+                x=round((x_min + x_max) / 2, 2),
+                y=mount_height,
+                z=round(z_min, 2),
+                yaw_deg=0.0,  # +Z, into its own sector
+                pitch_deg=round(-math.degrees(math.atan2(mount_height, reach)), 1),
+                fov_deg=round(
+                    max(40.0, min(110.0, 2 * math.degrees(math.atan2(half_width, reach)))), 1
+                ),
+                range_m=round(math.hypot(mount_height, reach), 2),
+                color="#B08D57",
+            )
+
+        # Perimeter only. Interior partitions would be an invention: nothing here
+        # knows where the walls of the building are.
+        self.walls = [
+            [0.0, 0.0, self.width_m, 0.0, self.height_m],
+            [self.width_m, 0.0, self.width_m, self.depth_m, self.height_m],
+            [self.width_m, self.depth_m, 0.0, self.depth_m, self.height_m],
+            [0.0, self.depth_m, 0.0, 0.0, self.height_m],
+        ]
+        return self.camera_mounts[camera_id]
+
+    def remove_camera(self, camera_id: str) -> None:
+        """Detach a camera and re-lay-out the remaining sectors."""
+        if camera_id not in self.camera_mounts:
+            return
+        remaining = [cid for cid in self.camera_mounts if cid != camera_id]
+        names = {cid: self.camera_mounts[cid].name for cid in remaining}
+        self.camera_mounts.clear()
+        self.sectors.clear()
+        self.rooms.clear()
+        self.walls.clear()
+        for cid in remaining:
+            self.add_camera(cid, name=names[cid])
 
     def project_camera_to_3d(
         self,
@@ -160,30 +209,21 @@ class FacilitySpatialTwin:
         norm_x: float,
         norm_y: float,
     ) -> tuple[float, float, float]:
-        """Transform normalized camera image coordinates [0, 1] into 3D world space (meters)."""
-        mount = self.camera_mounts.get(camera_id)
-        if not mount:
-            # Fallback center projection
-            return (self.width_m * norm_x, 0.0, self.depth_m * norm_y)
+        """Normalised camera ground point to facility metres.
 
-        # Sector boundary anchors
-        if camera_id == "cam_01_retail":
-            wx = 1.0 + norm_x * 17.5
-            wz = 1.0 + norm_y * 10.0
-        elif camera_id == "cam_02_crosswalk":
-            wx = 21.5 + (1.0 - norm_x) * 17.5
-            wz = 1.0 + norm_y * 10.0
-        elif camera_id == "cam_03_corridor":
-            wx = 1.0 + norm_x * 19.5
-            wz = 13.0 + norm_y * 10.0
-        elif camera_id == "cam_04_doorway":
-            wx = 21.5 + (1.0 - norm_x) * 17.5
-            wz = 13.0 + norm_y * 10.0
-        else:
-            wx = self.width_m * norm_x
-            wz = self.depth_m * norm_y
-
-        return (round(wx, 2), 0.0, round(wz, 2))
+        A camera with no sector maps onto the whole floor. That is the only
+        answer available - it is not known which part of the building it watches
+        - and it is better than dropping the entity, which would take a person
+        who is plainly there off the map.
+        """
+        sector = self.sectors.get(camera_id)
+        if sector is None:
+            return (
+                round(self.width_m * max(0.0, min(1.0, norm_x)), 2),
+                0.0,
+                round(self.depth_m * max(0.0, min(1.0, norm_y)), 2),
+            )
+        return sector.project(norm_x, norm_y)
 
     def update_entity_3d(
         self,

@@ -13,6 +13,7 @@ import numpy as np
 
 from vantage.config.schema import SourceConfig
 from vantage.core.logging import get_logger
+from vantage.core.resilience import StageRegistry
 from vantage.dashboard.live import LiveFeed, LiveSnapshot
 from vantage.entity.manager import EntityContextManager
 from vantage.events.contracts import EventCandidate, Severity
@@ -135,8 +136,20 @@ class MultiCameraPipeline:
 
         # Cross-Camera Re-ID, Radar Map, 3D Spatial Twin, Journeys, Threats, and Video Evidence
         self.reid_tracker = CrossCameraReIDTracker()
-        self.radar_map = FacilityRadarMap()
-        self.spatial_twin = FacilitySpatialTwin(zone_registry=self.zone_registry)
+        # Built from the cameras actually configured, so the facility view
+        # describes this deployment rather than a fixed demo building. The radar
+        # shares the twin rather than keeping a second layout: two views of one
+        # floor that each invented their own were bound to disagree, and did.
+        self.spatial_twin = FacilitySpatialTwin(
+            list(camera_sources), zone_registry=self.zone_registry
+        )
+        self.radar_map = FacilityRadarMap(self.spatial_twin)
+        # The same StageRegistry the single-camera run uses. What was published
+        # before was a dict of call counts derived from the grid frame index with
+        # "failures": 0 written in - a health panel that could not report ill
+        # health, in the one place whose whole job is to say when something has
+        # stopped.
+        self.stages = StageRegistry()
         self.journey_tracker = FacilityJourneyTracker()
         self.threat_engine = ThreatDetectionEngine()
         self.evidence_recorder = VideoEvidenceRecorder(output_dir="data/evidence")
@@ -314,7 +327,7 @@ class MultiCameraPipeline:
                 continue
             t_next = now + frame_interval_s
 
-            raw_frame = worker.source.read()
+            raw_frame = self.stages.guard(f"ingest:{worker.camera_id}").run(worker.source.read)
             if raw_frame is None:
                 # Loop recorded file if finished
                 worker.source.close()
@@ -336,7 +349,10 @@ class MultiCameraPipeline:
             # 1. Detection (Interleaved every 2nd frame; filter domain classes)
             if frame_idx % 2 == 0 or latest_det is None:
                 with self._infer_lock:
-                    raw_det_res = self._detector.detect(raw_frame)
+                    raw_det_res = self.stages.guard("detection").run(
+                        self._detector.detect, raw_frame
+                    )
+                if raw_det_res is not None:
                     filtered_dets = [
                         d
                         for d in raw_det_res.detections
@@ -353,13 +369,16 @@ class MultiCameraPipeline:
                         inference_ms=raw_det_res.inference_ms,
                     )
             det_res = latest_det
+            if det_res is None:
+                # The detector failed and there is no previous result to carry
+                # forward. Skipping the frame is the whole point of the guard:
+                # a stage that throws loses its frame, not the run.
+                continue
 
             # 2. Tracking
             track_res = worker.tracker.update(det_res, frame=raw_frame)
             confirmed_tracks = [t for t in track_res.tracks if getattr(t, "is_confirmed", True)]
-            dets = (
-                list(det_res.detections) if det_res and hasattr(det_res, "detections") else []
-            )
+            dets = list(det_res.detections)
 
             # 3. Cross-Camera Re-ID Association
             local_to_global = self.reid_tracker.update_camera(
@@ -716,8 +735,17 @@ class MultiCameraPipeline:
     def _grid_compositor_loop(self) -> None:
         """Dynamically arranges 1 to N cameras into a clean letterboxed matrix grid."""
         grid_frame_idx = 0
+        grid_fps = 0.0
+        fps_window_start = time.perf_counter()
+        fps_window_frames = 0
         while self._running:
             grid_frame_idx += 1
+            fps_window_frames += 1
+            elapsed = time.perf_counter() - fps_window_start
+            if elapsed >= 1.0:
+                grid_fps = round(fps_window_frames / elapsed, 1)
+                fps_window_frames = 0
+                fps_window_start = time.perf_counter()
             n = len(self.workers)
             if n <= 0:
                 time.sleep(0.05)
@@ -804,18 +832,14 @@ class MultiCameraPipeline:
                 entities=tuple(all_entities),
                 events=tuple(events_copy[:15]),
                 stats={
-                    "fps": 24.0,
-                    "source": f"{n}-CAM FACILITY GRID",
+                    # Measured over the last second of compositing, not the
+                    # target. A grid that has fallen to 6 fps should say 6.
+                    "fps": grid_fps,
+                    "source": f"{n}-camera facility",
                     "active_cameras": n,
                     "total_entities": len(all_entities),
                 },
-                health={
-                    "multi_ingestion": {"calls": grid_frame_idx * n, "failures": 0},
-                    "perception": {"calls": grid_frame_idx * n, "failures": 0},
-                    "tracking": {"calls": grid_frame_idx * n, "failures": 0},
-                    "cross_camera_reid": {"calls": grid_frame_idx, "failures": 0},
-                    "radar_digital_twin": {"calls": grid_frame_idx, "failures": 0},
-                },
+                health=self.stages.to_dict(),
             )
             self.grid_feed.publish(grid, snapshot)
             time.sleep(0.04)  # 25 FPS compositing

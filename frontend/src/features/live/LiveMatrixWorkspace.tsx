@@ -141,11 +141,15 @@ export const LiveMatrixWorkspace: React.FC<{ live: LiveResponse | undefined; pen
         />
         <Stat label="Feed" value={stats?.source ?? null} />
         <Stat label="fps" value={stats ? stats.fps.toFixed(1) : null} />
-        <Stat
-          label="Dropped"
-          value={stats?.dropped ?? null}
-          tone={stats && stats.dropped > 0 ? 'alert' : 'normal'}
-        />
+        {stats?.active_cameras === undefined ? (
+          <Stat
+            label="Dropped"
+            value={stats?.dropped ?? null}
+            tone={stats?.dropped ? 'alert' : 'normal'}
+          />
+        ) : (
+          <Stat label="Cameras" value={stats.active_cameras} />
+        )}
         <Stat label="Frame age" value={live?.age_s === undefined ? null : `${live.age_s}s`} />
       </div>
 

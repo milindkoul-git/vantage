@@ -268,10 +268,22 @@ vantage-main/
 - **Rule Archetypes**: `exclusion`, `occupancy`, `dwell`, `directional`.
 
 ### 4.15 3D WebGL Digital Twin & Three.js Facility Mesh (Phase 14)
-- **Module**: `vantage.spatial.twin` & `index.html` Three.js renderer.
-- Manages $40\text{m} \times 24\text{m} \times 4.5\text{m}$ metric facility coordinate space.
-- Extrudes 2D camera polygons into 3D prismatic holographic bounding volumes ($H=2.8\text{m}$).
-- Renders 3D camera frustum pyramids and real-time 3D tracked entity avatars with breadcrumb trails.
+- **Module**: `vantage.spatial.twin`, rendered by `frontend/src/components/visualizations/SpatialTwin3D.tsx`.
+- **The layout is derived, not declared.** The twin lays out one sector per camera
+  it is given, across a configurable metric floor (default 40m x 24m x 4.5m). With
+  no cameras it is empty, and the dashboard says there is no facility model. It
+  previously shipped a fixed four-sector building keyed to the camera ids of a
+  demo recording, and produced it whatever was connected.
+- **Mounts are derived too**: each camera's pitch, range and field of view are
+  computed from the sector it covers, so the frustum drawn from them lands on the
+  floor it claims to watch. Constants drew cones that stopped short of their own
+  sector or continued underground.
+- **The projection is stated as coarse.** `ConfiguredSectorProjection` maps a
+  camera's normalised ground plane affinely onto its sector. That places two
+  people in different rooms in different places; it does not measure the distance
+  between them, and no calibrated homography is implemented.
+- Extrudes operator-drawn geofence polygons into 3D prisms (H = 2.8m), and renders
+  live entity positions with their recorded trails.
 
 ### 4.16 Physical RTSP / ONVIF IP Camera & USB Connectors (Phase 15)
 - **Module**: `vantage.ingestion.connectors`
