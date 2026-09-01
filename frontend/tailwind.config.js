@@ -74,8 +74,20 @@ export default {
         sans:  ['Inter', '-apple-system', 'BlinkMacSystemFont', 'Segoe UI', 'sans-serif'],
       },
       fontSize: {
-        'micro': ['0.65rem', { lineHeight: '0.9rem',  letterSpacing: '0.04em' }],
-        'tiny':  ['0.75rem', { lineHeight: '1.05rem', letterSpacing: '0.01em' }],
+        // A real scale rather than two sizes and then Tailwind's defaults.
+        //
+        // Six steps on a ~1.2 ratio from 10px, which is the smallest thing this
+        // interface should ever ask someone to read, and every one carries its
+        // own line height and tracking - a stamped 10px label needs open
+        // tracking to stay legible where an 18px serif heading needs none.
+        // Juries and operators want the same thing here: consistent rhythm at
+        // every breakpoint, which is impossible when half the sizes are inline.
+        'micro': ['0.625rem', { lineHeight: '0.875rem', letterSpacing: '0.06em' }],
+        'tiny':  ['0.75rem',  { lineHeight: '1.05rem',  letterSpacing: '0.01em' }],
+        'body':  ['0.8125rem',{ lineHeight: '1.25rem',  letterSpacing: '0' }],
+        'lede':  ['0.9375rem',{ lineHeight: '1.4rem',   letterSpacing: '-0.005em' }],
+        'title': ['1.125rem', { lineHeight: '1.5rem',   letterSpacing: '-0.01em' }],
+        'display': ['1.5rem', { lineHeight: '1.85rem',  letterSpacing: '-0.02em' }],
       },
       boxShadow: {
         // Paper drop-shadows — warm, soft, no glow

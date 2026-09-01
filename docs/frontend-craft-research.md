@@ -200,6 +200,28 @@ So the useful question is not *"which of these effects can we add?"* It is
 
 Each item: what it does, what it costs, and what it risks.
 
+> **Addendum, after implementation.** Everything in §5A and §5B below was built
+> with **zero new dependencies**, and the reason is a licence finding that
+> arrived while starting the work. GSAP is free of charge but its licence is
+> **not OSI-approved**, ownership remains with Webflow, and it carries no
+> explicit grant covering redistribution inside a distributed application.
+> Vantage ships a packaged `vantage.exe` containing the dashboard bundle, under
+> MIT. That is a licence question not worth answering in a release for
+> convenience, in a project that treats licensing as a first-class criterion
+> everywhere else.
+>
+> It turned out not to cost anything. Every item resolved to something native or
+> already present: number tweening is forty lines of `requestAnimationFrame`;
+> the chart's bars are an SVG this project already draws, so DrawSVG's real
+> contribution — arbitrary path length — was not needed; FLIP is a technique
+> rather than a library, and the graph nodes' positions were already in state,
+> so a CSS `transform` transition was enough; View Transitions are a platform
+> API; and `renderer.info` is a better leak check than `stats-gl` because it
+> lands in the console's own telemetry panel alongside the pipeline's.
+>
+> The one place GSAP *is* the right answer is a marketing site, which is served
+> rather than redistributed. See `marketing-site-plan.md`.
+
 ### A. Free wins — pure craft, no new claims
 
 **A1. Number transitions instead of number jumps.**

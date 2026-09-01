@@ -16,6 +16,7 @@
 import React, { useEffect, useRef } from 'react';
 import * as THREE from 'three';
 import type { TwinResponse } from '../../contracts/types';
+import { prefersReducedMotion } from '../../lib/motion';
 
 const COLORS = {
   background: 0x14110d,
@@ -34,10 +35,27 @@ const hex = (value: string | undefined, fallback: number): number => {
   return Number.isFinite(parsed) ? parsed : fallback;
 };
 
+export interface RendererStats {
+  calls: number;
+  triangles: number;
+  geometries: number;
+  textures: number;
+}
+
 export const SpatialTwin3D: React.FC<{
   twin: TwinResponse;
   selectedEntityId: string | null;
-}> = ({ twin, selectedEntityId }) => {
+  /**
+   * Called each frame with `renderer.info`.
+   *
+   * Reported so the operations drawer can show it. This page runs for a shift,
+   * and the standard three.js advice for that is to watch these counts: if the
+   * geometry or texture totals climb while the scene is static, something is
+   * not being disposed. A leak that takes four hours to matter is one nobody
+   * finds by looking at a demo.
+   */
+  onStats?: (stats: RendererStats) => void;
+}> = ({ twin, selectedEntityId, onStats }) => {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
 
   useEffect(() => {
@@ -49,12 +67,17 @@ export const SpatialTwin3D: React.FC<{
     const width = parent?.clientWidth || 900;
     const height = parent?.clientHeight || 600;
 
-    const scene = new THREE.Scene();
-    scene.background = new THREE.Color(COLORS.background);
-
     const centreX = facility.width_m / 2;
     const centreZ = facility.depth_m / 2;
     const span = Math.max(facility.width_m, facility.depth_m);
+
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color(COLORS.background);
+    // Distance fog, matched to the background so the far edge of the floor
+    // fades into it rather than ending at a hard line. It is depth cueing
+    // rather than weather: near is legible, far recedes, and nothing is hidden
+    // that was not already too small to read.
+    scene.fog = new THREE.Fog(COLORS.background, span * 0.9, span * 2.6);
 
     const camera = new THREE.PerspectiveCamera(45, width / height, 0.1, span * 8);
     const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
@@ -69,6 +92,11 @@ export const SpatialTwin3D: React.FC<{
     const key = new THREE.DirectionalLight(0xffe8c0, 0.7);
     key.position.set(centreX, span, centreZ);
     scene.add(key);
+    // A low warm fill from the opposite side, so a body reads as a cylinder
+    // rather than a silhouette when the key light is behind it.
+    const fill = new THREE.DirectionalLight(0xb08d57, 0.25);
+    fill.position.set(centreX - span, span * 0.4, centreZ - span);
+    scene.add(fill);
 
     const disposables: Array<THREE.BufferGeometry | THREE.Material> = [];
     const track = <T extends THREE.BufferGeometry | THREE.Material>(item: T): T => {
@@ -191,31 +219,60 @@ export const SpatialTwin3D: React.FC<{
       scene.add(cone);
     }
 
-    for (const entity of twin.entities ?? []) {
-      const selected = selectedEntityId === entity.entity_id;
-      const [x, , z] = entity.position;
-      const bodyGeometry = track(new THREE.CylinderGeometry(0.28, 0.28, 1.7, 14));
-      const bodyMaterial = track(
-        new THREE.MeshStandardMaterial({
-          color: selected ? COLORS.entitySelected : COLORS.entity,
-          emissive: selected ? COLORS.entitySelected : 0x000000,
-          emissiveIntensity: selected ? 0.5 : 0,
-        }),
-      );
-      const body = new THREE.Mesh(bodyGeometry, bodyMaterial);
-      body.position.set(x, 0.85, z);
-      scene.add(body);
+    // Bodies and heading markers are one instanced mesh each, whatever the
+    // occupancy. A mesh per entity is a draw call per entity and a fresh
+    // geometry and material allocated on every poll; a facility with fifty
+    // people on the floor was a hundred draw calls and a hundred allocations
+    // every three seconds. Two instanced meshes is two draw calls and no churn,
+    // and colour travels per instance rather than per material.
+    const entities = twin.entities ?? [];
+    const heading = entities.filter((e) => e.bearing_deg !== null && e.speed > 0);
+    const dummy = new THREE.Object3D();
+    const tint = new THREE.Color();
 
-      // A heading marker only where a bearing was measured; a stationary entity
-      // has no direction of travel and pointing one at north would invent it.
-      if (entity.bearing_deg !== null && entity.speed > 0) {
-        const coneGeometry = track(new THREE.ConeGeometry(0.2, 0.5, 8));
-        const coneMaterial = track(new THREE.MeshBasicMaterial({ color: 0xe8e2d4 }));
-        const cone = new THREE.Mesh(coneGeometry, coneMaterial);
-        cone.position.set(x, 2.0, z);
-        cone.rotation.y = (entity.bearing_deg * Math.PI) / 180;
-        scene.add(cone);
-      }
+    if (entities.length > 0) {
+      const bodyGeometry = track(new THREE.CylinderGeometry(0.28, 0.28, 1.7, 14));
+      const bodyMaterial = track(new THREE.MeshStandardMaterial({ vertexColors: false }));
+      const bodies = new THREE.InstancedMesh(bodyGeometry, bodyMaterial, entities.length);
+      bodies.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+      entities.forEach((entity, index) => {
+        const [x, , z] = entity.position;
+        dummy.position.set(x, 0.85, z);
+        dummy.rotation.set(0, 0, 0);
+        dummy.updateMatrix();
+        bodies.setMatrixAt(index, dummy.matrix);
+        bodies.setColorAt(
+          index,
+          tint.setHex(
+            selectedEntityId === entity.entity_id ? COLORS.entitySelected : COLORS.entity,
+          ),
+        );
+      });
+      bodies.instanceMatrix.needsUpdate = true;
+      if (bodies.instanceColor) bodies.instanceColor.needsUpdate = true;
+      scene.add(bodies);
+      disposables.push(bodies.geometry, bodies.material as THREE.Material);
+    }
+
+    // A heading marker only where a bearing was measured; a stationary entity
+    // has no direction of travel and pointing one at north would invent it.
+    if (heading.length > 0) {
+      const coneGeometry = track(new THREE.ConeGeometry(0.2, 0.5, 8));
+      const coneMaterial = track(new THREE.MeshBasicMaterial({ color: 0xe8e2d4 }));
+      const markers = new THREE.InstancedMesh(coneGeometry, coneMaterial, heading.length);
+      heading.forEach((entity, index) => {
+        const [x, , z] = entity.position;
+        dummy.position.set(x, 2.0, z);
+        dummy.rotation.set(0, ((entity.bearing_deg as number) * Math.PI) / 180, 0);
+        dummy.updateMatrix();
+        markers.setMatrixAt(index, dummy.matrix);
+      });
+      markers.instanceMatrix.needsUpdate = true;
+      scene.add(markers);
+    }
+
+    for (const entity of entities) {
+      const selected = selectedEntityId === entity.entity_id;
 
       const waypoints = twin.trails?.[entity.entity_id];
       if (waypoints && waypoints.length > 1) {
@@ -239,20 +296,53 @@ export const SpatialTwin3D: React.FC<{
     let angle = 0.6;
     let stopped = false;
     const orbit = span * 1.1;
+    // A viewer who has asked for less movement gets a fixed vantage point
+    // rather than a slower orbit. Reduced motion is a request to remove the
+    // animation, not to hurry it.
+    const orbiting = !prefersReducedMotion();
 
-    const render = () => {
-      if (stopped) return;
-      angle += 0.0015;
+    const place = () => {
       camera.position.set(
         centreX + Math.sin(angle) * orbit,
         span * 0.75,
         centreZ + Math.cos(angle) * orbit,
       );
       camera.lookAt(centreX, 0, centreZ);
+    };
+
+    const render = () => {
+      if (stopped) return;
+      angle += 0.0015;
+      place();
       renderer.render(scene, camera);
+      onStats?.({
+        calls: renderer.info.render.calls,
+        triangles: renderer.info.render.triangles,
+        geometries: renderer.info.memory.geometries,
+        textures: renderer.info.memory.textures,
+      });
       frame = requestAnimationFrame(render);
     };
-    render();
+
+    if (orbiting) {
+      render();
+    } else {
+      place();
+      renderer.render(scene, camera);
+    }
+
+    // The orbit is ambient, not informative, so it stops when nobody can see
+    // it. A background tab holding a WebGL loop open competes with the
+    // inference running in the same process for the whole time it is hidden.
+    const onVisibility = () => {
+      if (!orbiting || stopped) return;
+      if (document.hidden) {
+        cancelAnimationFrame(frame);
+      } else {
+        frame = requestAnimationFrame(render);
+      }
+    };
+    document.addEventListener('visibilitychange', onVisibility);
 
     const resize = () => {
       const w = parent?.clientWidth || width;
@@ -267,10 +357,11 @@ export const SpatialTwin3D: React.FC<{
       stopped = true;
       cancelAnimationFrame(frame);
       window.removeEventListener('resize', resize);
+      document.removeEventListener('visibilitychange', onVisibility);
       for (const item of disposables) item.dispose();
       renderer.dispose();
     };
-  }, [twin, selectedEntityId]);
+  }, [twin, selectedEntityId, onStats]);
 
   return <canvas ref={canvasRef} className="block h-full w-full" />;
 };

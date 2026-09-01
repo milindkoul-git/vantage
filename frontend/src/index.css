@@ -60,10 +60,56 @@
   }
 
   /* Keyboard focus is visible everywhere. A console operated under pressure is
-     operated by keyboard as often as by mouse. */
+     operated by keyboard as often as by mouse, and a missing focus state is the
+     single most-cited accessibility failure in heavy-motion interfaces.
+
+     The global rule is the floor, not the whole treatment: surfaces below give
+     focus a shape that matches the thing being focused, because a 2px ring
+     around a 4px-radius chip and around a full-width panel row should not look
+     like the same event. */
   :focus-visible {
     outline: 2px solid #b08d57;
     outline-offset: 2px;
+    border-radius: 2px;
+  }
+
+  /* A row in a list: the ring hugs the row rather than the text inside it. */
+  li > button:focus-visible,
+  li > a:focus-visible {
+    outline-offset: -2px;
+    border-radius: 2px;
+  }
+
+  /* Form controls carry their own border already; the ring sits just outside it
+     so the two do not merge into one thick line. */
+  select:focus-visible,
+  input:focus-visible {
+    outline-offset: 1px;
+  }
+
+  /* Icon-only buttons are small targets, so their ring is tight and round. */
+  button[aria-label]:focus-visible {
+    outline-offset: 1px;
+    border-radius: 3px;
+  }
+
+  /* Skip link: the first thing a keyboard reaches, and invisible until then.
+     Six workspaces of navigation sit between the top of the document and the
+     panel someone actually came to read. */
+  .skip-link {
+    position: absolute;
+    left: 8px;
+    top: -60px;
+    z-index: 100;
+    padding: 8px 14px;
+    background: #1c1916;
+    color: #e8e2d4;
+    border: 1px solid #b08d57;
+    border-radius: 2px;
+    transition: top 120ms cubic-bezier(0.22, 1, 0.36, 1);
+  }
+  .skip-link:focus {
+    top: 8px;
   }
 
   select,
@@ -166,8 +212,31 @@
     animation: folder-pull-in 220ms cubic-bezier(0.22, 1, 0.36, 1) both;
   }
 
+  /* The page's own entrance: panels rise a few pixels and resolve, staggered by
+     a variable the shell sets per child. Deliberately short and deliberately
+     once - it plays on first paint and never on a workspace change, because an
+     operator switching views twenty times an hour does not want a curtain each
+     time. Nothing here delays interactivity: only opacity and transform
+     animate, and every control is clickable from the first frame. */
+  @keyframes settle-in {
+    from {
+      opacity: 0;
+      transform: translateY(6px);
+    }
+    to {
+      opacity: 1;
+      transform: none;
+    }
+  }
+
+  .settle {
+    animation: settle-in 260ms cubic-bezier(0.22, 1, 0.36, 1) both;
+    animation-delay: var(--settle-delay, 0ms);
+  }
+
   @media (prefers-reduced-motion: reduce) {
-    .folder-pull {
+    .folder-pull,
+    .settle {
       animation: none;
       opacity: 1;
       transform: none;
@@ -175,6 +244,12 @@
     * {
       animation-duration: 0.01ms !important;
       transition-duration: 0.01ms !important;
+    }
+    /* View Transitions are animations the * rule above cannot reach. */
+    ::view-transition-group(*),
+    ::view-transition-old(*),
+    ::view-transition-new(*) {
+      animation: none !important;
     }
   }
 
@@ -194,6 +269,15 @@
     background: rgba(176, 141, 87, 0.3);
     border-radius: 2px;
   }
+}
+
+/* Workspace changes cross-fade rather than slide. A slide implies the two views
+   sit next to each other in space, and they do not - they are six readings of
+   the same facility. 180ms is under the 200ms ceiling a console should keep. */
+::view-transition-old(root),
+::view-transition-new(root) {
+  animation-duration: 180ms;
+  animation-timing-function: cubic-bezier(0.22, 1, 0.36, 1);
 }
 
 #root {

@@ -2,6 +2,7 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react';
 import { useInvestigationStore } from '../../store/useInvestigationStore';
 import type { RelationshipGraphResponse } from '../../contracts/types';
+import { DURATION, EASE, duration } from '../../lib/motion';
 
 interface GraphProps {
   graphData?: RelationshipGraphResponse['graph'];
@@ -36,6 +37,24 @@ function seededRot(seed: string): number {
   }
   return ((h >>> 0) / 0xFFFFFFFF) * 5 - 2.5;
 }
+
+/**
+ * The type roles on a card, as three sizes rather than six inline ones.
+ *
+ * This component arrived with `fontSize` written inline twelve times at 7px,
+ * 8px, 9px, 11px and 0.6rem - five sizes doing three jobs, none of them from
+ * the project's scale, and three of them below the 10px floor the rest of the
+ * interface treats as the smallest thing worth asking anyone to read. The names
+ * below are the jobs; the sizes match `tailwind.config.js`.
+ */
+const TYPE = {
+  /** The entity id on a card. The one thing on it that must be readable. */
+  cardName: { fontSize: '0.625rem', letterSpacing: '0.06em' },
+  /** Its link count, and the edge labels on the strings between cards. */
+  cardMeta: { fontSize: '0.625rem', letterSpacing: '0.04em' },
+  /** The board watermark and the legend. Decorative, deliberately quiet. */
+  board: { fontSize: '0.6875rem', letterSpacing: '0.15em' },
+} as const;
 
 const CARD_W = 120;
 const CARD_H = 150;
@@ -418,6 +437,8 @@ export const ForceDirectedGraph: React.FC<GraphProps> = ({ graphData, maxNodes =
     [selectEntity]
   );
 
+  // Zero under prefers-reduced-motion, which turns the transition off entirely.
+  const settle = duration(DURATION.view);
   const edges = trimmed?.edges ?? [];
   const totalEdges = graphData?.total_edges ?? 0;
 
@@ -497,7 +518,7 @@ export const ForceDirectedGraph: React.FC<GraphProps> = ({ graphData, maxNodes =
                     right: '5px',
                     transform: 'rotate(-3deg)',
                     fontFamily: "'IBM Plex Mono', monospace",
-                    fontSize: '0.6rem',
+                    ...TYPE.cardName,
                     fontWeight: 700,
                     letterSpacing: '0.12em',
                     textTransform: 'uppercase' as const,
@@ -516,7 +537,7 @@ export const ForceDirectedGraph: React.FC<GraphProps> = ({ graphData, maxNodes =
                 <div
                   style={{
                     fontFamily: "'IBM Plex Mono', monospace",
-                    fontSize: '9px',
+                    ...TYPE.cardName,
                     fontWeight: 700,
                     letterSpacing: '0.10em',
                     textTransform: 'uppercase' as const,
@@ -530,7 +551,7 @@ export const ForceDirectedGraph: React.FC<GraphProps> = ({ graphData, maxNodes =
           </div>
         ))}
 
-        <div style={{ position: 'absolute', bottom: 20, right: 24, zIndex: 5, fontFamily: '"Source Serif 4", serif', fontSize: '11px', color: 'rgba(176,141,87,0.18)', letterSpacing: '0.15em', textTransform: 'uppercase' as const, userSelect: 'none', pointerEvents: 'none' }}>
+        <div style={{ position: 'absolute', bottom: 20, right: 24, zIndex: 5, fontFamily: '"Source Serif 4", serif', ...TYPE.board, color: 'rgba(176,141,87,0.18)', letterSpacing: '0.15em', textTransform: 'uppercase' as const, userSelect: 'none', pointerEvents: 'none' }}>
           Case Board · Vantage Intelligence
         </div>
       </div>
@@ -651,15 +672,23 @@ export const ForceDirectedGraph: React.FC<GraphProps> = ({ graphData, maxNodes =
           <div
             key={node.id}
             style={{
+              // Positioned by transform rather than by left/top so a relayout
+              // is a compositor job rather than a layout one, and so it can be
+              // transitioned. The graph repolls every fifteen seconds and the
+              // relaxation can move a node a long way; without this the card
+              // teleports and the operator cannot tell which one moved.
               position: 'absolute',
-              left: node.x,
-              top: node.y,
+              left: 0,
+              top: 0,
               width: CARD_W,
               zIndex: isSelected ? 10 : isDragging ? 8 : isHovered ? 6 : 2,
-              transform: `rotate(${node.rot}deg)`,
+              transform: `translate3d(${node.x}px, ${node.y}px, 0) rotate(${node.rot}deg)`,
+              // Never while dragging: the card must sit under the cursor, not
+              // lag a fifth of a second behind it.
+              transition: isDragging ? 'none' : `transform ${settle}ms ${EASE.inOut}`,
               cursor: isDragging ? 'grabbing' : 'zoom-in',
               userSelect: 'none',
-              willChange: 'transform, left, top',
+              willChange: 'transform',
             }}
             onMouseEnter={() => setHoveredId(node.id)}
             onMouseLeave={() => setHoveredId(null)}
@@ -707,7 +736,7 @@ export const ForceDirectedGraph: React.FC<GraphProps> = ({ graphData, maxNodes =
                       borderRadius: '1px',
                       padding: '1px 4px',
                       fontFamily: '"IBM Plex Mono", monospace',
-                      fontSize: '7px',
+                      ...TYPE.cardMeta,
                       fontWeight: 700,
                       color: '#B33A2E',
                       letterSpacing: '0.1em',
@@ -732,7 +761,7 @@ export const ForceDirectedGraph: React.FC<GraphProps> = ({ graphData, maxNodes =
                 <div
                   style={{
                     fontFamily: '"IBM Plex Mono", monospace',
-                    fontSize: '9px',
+                    ...TYPE.cardName,
                     fontWeight: 700,
                     color: '#1A1512',
                     textTransform: 'uppercase' as const,
@@ -747,7 +776,7 @@ export const ForceDirectedGraph: React.FC<GraphProps> = ({ graphData, maxNodes =
                 <div
                   style={{
                     fontFamily: '"IBM Plex Mono", monospace',
-                    fontSize: '7px',
+                    ...TYPE.cardMeta,
                     color: '#7A6545',
                     marginTop: '1px',
                   }}
@@ -764,7 +793,7 @@ export const ForceDirectedGraph: React.FC<GraphProps> = ({ graphData, maxNodes =
                       borderRadius: '1px',
                       padding: '1px 4px',
                       fontFamily: '"IBM Plex Mono", monospace',
-                      fontSize: '7px',
+                      ...TYPE.cardMeta,
                       fontWeight: 700,
                       color: '#B33A2E',
                       letterSpacing: '0.12em',
@@ -800,7 +829,7 @@ export const ForceDirectedGraph: React.FC<GraphProps> = ({ graphData, maxNodes =
         <div
           style={{
             fontFamily: '"Source Serif 4", "Georgia", serif',
-            fontSize: '11px',
+            ...TYPE.board,
             fontWeight: 600,
             color: '#1A1512',
             marginBottom: '8px',
@@ -814,7 +843,7 @@ export const ForceDirectedGraph: React.FC<GraphProps> = ({ graphData, maxNodes =
           <svg width="28" height="8" style={{ flexShrink: 0 }}>
             <line x1="0" y1="4" x2="28" y2="4" stroke="#B33A2E" strokeWidth="2" strokeDasharray="5 3" />
           </svg>
-          <span style={{ fontFamily: '"IBM Plex Mono", monospace', fontSize: '8px', color: '#1A1512' }}>
+          <span style={{ fontFamily: '"IBM Plex Mono", monospace', ...TYPE.cardMeta, color: '#1A1512' }}>
             FOLLOWING
           </span>
         </div>
@@ -822,7 +851,7 @@ export const ForceDirectedGraph: React.FC<GraphProps> = ({ graphData, maxNodes =
           <svg width="28" height="8" style={{ flexShrink: 0 }}>
             <line x1="0" y1="4" x2="28" y2="4" stroke="#8A6040" strokeWidth="1.5" />
           </svg>
-          <span style={{ fontFamily: '"IBM Plex Mono", monospace', fontSize: '8px', color: '#1A1512' }}>
+          <span style={{ fontFamily: '"IBM Plex Mono", monospace', ...TYPE.cardMeta, color: '#1A1512' }}>
             PROXIMITY / OTHER
           </span>
         </div>
@@ -831,7 +860,7 @@ export const ForceDirectedGraph: React.FC<GraphProps> = ({ graphData, maxNodes =
             borderTop: '1px solid #C9B896',
             paddingTop: '5px',
             fontFamily: '"IBM Plex Mono", monospace',
-            fontSize: '7px',
+            ...TYPE.cardMeta,
             color: '#7A6545',
             display: 'flex',
             justifyContent: 'space-between',
@@ -849,7 +878,7 @@ export const ForceDirectedGraph: React.FC<GraphProps> = ({ graphData, maxNodes =
         </div>
       </div>
       
-      <div style={{ position: 'absolute', bottom: 20, right: 24, zIndex: 5, fontFamily: '"Source Serif 4", serif', fontSize: '11px', color: 'rgba(176,141,87,0.14)', letterSpacing: '0.15em', textTransform: 'uppercase', userSelect: 'none', pointerEvents: 'none' }}>
+      <div style={{ position: 'absolute', bottom: 20, right: 24, zIndex: 5, fontFamily: '"Source Serif 4", serif', ...TYPE.board, color: 'rgba(176,141,87,0.14)', letterSpacing: '0.15em', textTransform: 'uppercase', userSelect: 'none', pointerEvents: 'none' }}>
         Case Board · Vantage Intelligence
       </div>
     </div>

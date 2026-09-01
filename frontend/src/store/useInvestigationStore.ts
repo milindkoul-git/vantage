@@ -1,4 +1,6 @@
 import { create } from 'zustand';
+import { prefersReducedMotion } from '../lib/motion';
+import type { RendererStats } from '../components/visualizations/SpatialTwin3D';
 import type { AnalyticsWindow, Metric, Severity } from '../contracts/vocabulary';
 
 export type WorkspaceId = 'live' | 'incidents' | 'trends' | 'intelligence' | 'investigate' | 'twin';
@@ -38,6 +40,17 @@ export interface InvestigationStore {
   analyticsMetric: Metric;
   analyticsWindow: AnalyticsWindow;
 
+  /**
+   * The last frame's `renderer.info` from the twin, or null when it is not open.
+   *
+   * Here rather than local to the twin because the operations drawer is where
+   * this console reports its own health, and the browser is part of that. A
+   * dashboard meant to run for a shift needs the same leak check the pipeline
+   * gets: if geometries or textures climb while nothing is happening, something
+   * is not being disposed.
+   */
+  rendererStats: RendererStats | null;
+
   setActiveWorkspace: (ws: WorkspaceId) => void;
   selectEntity: (id: string | null) => void;
   selectIncident: (id: string | null) => void;
@@ -51,6 +64,7 @@ export interface InvestigationStore {
   setEventQuery: (query: string) => void;
   setAnalyticsMetric: (metric: Metric) => void;
   setAnalyticsWindow: (window: AnalyticsWindow) => void;
+  setRendererStats: (stats: RendererStats | null) => void;
 }
 
 const isWorkspace = (value: string): value is WorkspaceId =>
@@ -94,9 +108,22 @@ export const useInvestigationStore = create<InvestigationStore>((set) => ({
   eventQuery: '',
   analyticsMetric: 'entities',
   analyticsWindow: '24h',
+  rendererStats: null,
 
   setActiveWorkspace: (ws) => {
     if (typeof window !== 'undefined') window.location.hash = ws;
+    // View Transitions where the browser has them: the six workspaces are
+    // different views of one facility, and a hard cut between them makes the
+    // operator re-find themselves each time. Same-document transitions are
+    // supported everywhere current; where they are not, or where the viewer has
+    // asked for less movement, this is a plain state change and the page cuts.
+    const start = (document as Document & {
+      startViewTransition?: (cb: () => void) => unknown;
+    }).startViewTransition;
+    if (start && !prefersReducedMotion()) {
+      start.call(document, () => set({ activeWorkspace: ws }));
+      return;
+    }
     set({ activeWorkspace: ws });
   },
   selectEntity: (id) => set({ selectedEntityId: id }),
@@ -114,4 +141,5 @@ export const useInvestigationStore = create<InvestigationStore>((set) => ({
   setEventQuery: (eventQuery) => set({ eventQuery }),
   setAnalyticsMetric: (analyticsMetric) => set({ analyticsMetric }),
   setAnalyticsWindow: (analyticsWindow) => set({ analyticsWindow }),
+  setRendererStats: (rendererStats) => set({ rendererStats }),
 }));

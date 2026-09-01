@@ -11,6 +11,7 @@
 
 import React from 'react';
 import { AlertTriangle, Link2, Radio, Users } from 'lucide-react';
+import { AnimatedNumber } from '../common/AnimatedNumber';
 
 interface Cell {
   label: string;
@@ -62,17 +63,20 @@ export const IntelligenceRibbon: React.FC<RibbonProps> = ({
   return (
     <div className="flex flex-none items-center gap-6 border-b border-brass/12 bg-board/60 px-4 py-1.5">
       {cells.map((cell) => (
-        <div key={cell.label} className="flex items-center gap-1.5" title={cell.hint}>
+        <div
+          key={cell.label}
+          className="flex items-center gap-1.5"
+          title={cell.hint}
+          style={{ color: cell.value === null ? '#6B5545' : '#E8E2D4' }}
+        >
           <span className="text-ink-faint" aria-hidden>
             {cell.icon}
           </span>
           <span className="stamp text-ink-faint">{cell.label}</span>
-          <span
+          <AnimatedNumber
+            value={cell.value}
             className="font-mono text-tiny tabular-nums"
-            style={{ color: cell.value === null ? '#6B5545' : '#E8E2D4' }}
-          >
-            {cell.value === null ? '—' : cell.value}
-          </span>
+          />
         </div>
       ))}
     </div>

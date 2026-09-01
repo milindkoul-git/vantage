@@ -67,8 +67,10 @@ export const OperationsDrawer: React.FC<{
   health: Record<string, StageHealth> | undefined;
   stats: SystemStatsResponse | undefined;
 }> = ({ health, stats }) => {
-  const { isOperationsDrawerOpen, setOperationsDrawerOpen } = useInvestigationStore();
+  const { isOperationsDrawerOpen, setOperationsDrawerOpen, rendererStats } =
+    useInvestigationStore();
   if (!isOperationsDrawerOpen) return null;
+  const renderer = rendererStats;
 
   const stages = Object.values(health ?? {});
   const store = stats?.store ?? null;
@@ -104,6 +106,24 @@ export const OperationsDrawer: React.FC<{
           <Stat label="Observations" value={store ? store.observations : null} />
           <Stat label="Store size" value={store ? bytes(store.bytes) : null} />
         </section>
+
+        {renderer && (
+          <section className="border-t border-brass/15 px-4 py-3">
+            <h3 className="stamp mb-2 text-brass">Renderer</h3>
+            <div className="grid grid-cols-2 gap-3">
+              <Stat label="Draw calls" value={renderer.calls} hint="Under 100 is comfortable at 60fps" />
+              <Stat label="Triangles" value={renderer.triangles} />
+              <Stat label="Geometries" value={renderer.geometries} />
+              <Stat label="Textures" value={renderer.textures} />
+            </div>
+            <p className="mt-2 text-micro leading-relaxed text-ink-faint/70">
+              The twin's own numbers, sampled twice a second. Geometry and
+              texture counts that climb while the facility is still mean
+              something is not being disposed — the one failure a page meant to
+              run for a shift has that a demo does not.
+            </p>
+          </section>
+        )}
 
         <section className="border-t border-brass/15">
           <h3 className="stamp px-4 py-2 text-brass">Stages</h3>

@@ -24,6 +24,7 @@ import { useInvestigationStore } from '../../store/useInvestigationStore';
 import type { WorkspaceId } from '../../store/useInvestigationStore';
 import type { Severity } from '../../contracts/vocabulary';
 import { SEVERITY_COLOR } from '../../contracts/vocabulary';
+import { AnimatedNumber } from '../common/AnimatedNumber';
 
 export interface HeaderProps {
   /** Frames per second the pipeline is delivering, or null when not live. */
@@ -102,9 +103,11 @@ export const Header: React.FC<HeaderProps> = ({ fps, streaming, worstActive, act
             style={{ backgroundColor: streaming ? '#6B8F6B' : '#6B5545' }}
             aria-hidden
           />
-          <span className="stamp tabular-nums text-warm-white">
-            {fps === null ? '—' : fps.toFixed(1)}
-          </span>
+          <AnimatedNumber
+            value={fps}
+            decimals={1}
+            className="stamp tabular-nums text-warm-white"
+          />
           <span className="stamp text-ink-faint">fps</span>
         </div>
 

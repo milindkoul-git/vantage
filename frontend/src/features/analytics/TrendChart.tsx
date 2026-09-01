@@ -19,8 +19,9 @@
  * value second.
  */
 
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import type { AnalyticsAnomaly, AnalyticsBucket } from '../../contracts/types';
+import { DURATION, staggerStep, tween } from '../../lib/motion';
 
 const NO_DATA = '#6B5545';
 const BAR = '#B08D57';
@@ -51,6 +52,24 @@ export const TrendChart: React.FC<Props> = ({
   height = 200,
 }) => {
   const [hover, setHover] = useState<number | null>(null);
+
+  // Bars grow from the baseline when the data changes, staggered left to right,
+  // so the shape of the window assembles rather than appearing. It runs on a
+  // change of metric or window - not on every poll - because a chart that
+  // redraws itself every sixty seconds is a chart nobody reads.
+  const [grow, setGrow] = useState(1);
+  const signature = `${buckets.length}:${buckets[0]?.start ?? 0}:${unitLabel}`;
+  const lastSignature = useRef<string | null>(null);
+  useEffect(() => {
+    if (lastSignature.current === signature) return;
+    const first = lastSignature.current === null;
+    lastSignature.current = signature;
+    // The very first paint is part of the page's own entrance; a second,
+    // independently-timed animation on top of it reads as a stutter.
+    if (first) return;
+    setGrow(0);
+    return tween(DURATION.panel, setGrow);
+  }, [signature]);
 
   const anomalyByStart = useMemo(() => {
     const map = new Map<number, AnalyticsAnomaly>();
@@ -150,7 +169,12 @@ export const TrendChart: React.FC<Props> = ({
             );
           }
 
-          const barHeight = Math.max(bucket.value > 0 ? 1.5 : 1, (bucket.value / peak) * plot);
+          // Stagger by position, with the step shrinking as the bucket count
+          // grows so a 24-bar day and a 720-bar month take the same time.
+          const step = staggerStep(buckets.length) / DURATION.panel;
+          const local = Math.max(0, Math.min(1, (grow - index * step) / Math.max(1e-6, 1 - step * buckets.length + step)));
+          const full = Math.max(bucket.value > 0 ? 1.5 : 1, (bucket.value / peak) * plot);
+          const barHeight = full * local;
           const y = padTop + plot - barHeight;
           return (
             <g key={bucket.start} onMouseEnter={() => setHover(index)}>

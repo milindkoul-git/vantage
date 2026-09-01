@@ -185,14 +185,25 @@ const AppContent: React.FC = () => {
 
   return (
     <div className="bg-cork flex h-screen w-screen select-none flex-col overflow-hidden font-sans text-warm-white">
-      <Header
+      {/* First stop for a keyboard, invisible until then. Six workspaces of
+          navigation sit between the top of the document and the panel someone
+          came to read. */}
+      <a href="#workspace" className="skip-link">
+        Skip to the workspace
+      </a>
+
+      <div className="settle flex-none" style={{ '--settle-delay': '0ms' } as React.CSSProperties}>
+        <Header
         fps={live?.available ? (live.stats?.fps ?? null) : null}
         streaming={Boolean(live?.available && live.has_frame)}
         worstActive={worstActive}
         activeIncidents={incidentsQuery.data?.available ? (activeIncidents?.length ?? 0) : null}
       />
 
-      <IntelligenceRibbon
+      </div>
+
+      <div className="settle flex-none" style={{ '--settle-delay': '60ms' } as React.CSSProperties}>
+        <IntelligenceRibbon
         tracked={live?.available ? (live.entities?.length ?? 0) : null}
         incidents={incidentsQuery.data?.available ? (incidents?.length ?? 0) : null}
         associations={
@@ -201,7 +212,14 @@ const AppContent: React.FC = () => {
         eventsStored={statsQuery.data?.store ? statsQuery.data.store.events : null}
       />
 
-      <main className="relative flex min-h-0 flex-1 flex-col overflow-hidden">
+      </div>
+
+      <main
+        id="workspace"
+        tabIndex={-1}
+        className="settle relative flex min-h-0 flex-1 flex-col overflow-hidden"
+        style={{ '--settle-delay': '120ms' } as React.CSSProperties}
+      >
         {activeWorkspace === 'live' && (
           <LiveMatrixWorkspace live={live} pending={liveQuery.isPending} />
         )}

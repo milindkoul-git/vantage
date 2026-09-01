@@ -107,6 +107,69 @@ try {
     if (state !== 'select') problems.push(`analytics control ${name} is ${state}`);
   }
   console.log(`controls      metric=${controls.metric} since=${controls.since}`);
+
+  // The skip link is the first thing a keyboard reaches and is invisible until
+  // it has focus. Both halves matter: one that never shows is useless, one that
+  // always shows is clutter.
+  await page.goto(`${URL}/#live`, { waitUntil: 'networkidle2' });
+  const before = await page.evaluate(() => {
+    const link = document.querySelector('.skip-link');
+    if (!link) return null;
+    link.focus();
+    return {
+      hiddenUntilFocused: link.getBoundingClientRect().top < 0,
+      target: link.getAttribute('href'),
+      targetExists: Boolean(document.querySelector(link.getAttribute('href'))),
+    };
+  });
+  // The link slides in over 120ms, so it has to be measured after that rather
+  // than in the same tick as the focus() that started it.
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  const skip = before === null
+    ? { present: false }
+    : {
+        present: true,
+        ...before,
+        visibleWhenFocused: await page.evaluate(
+          () => document.querySelector('.skip-link').getBoundingClientRect().top >= 0,
+        ),
+      };
+  if (!skip.present) problems.push('no skip link');
+  else {
+    if (!skip.hiddenUntilFocused) problems.push('skip link is visible before focus');
+    if (!skip.visibleWhenFocused) problems.push('skip link stays hidden when focused');
+    if (!skip.targetExists) problems.push(`skip link points at ${skip.target}, which is not there`);
+    console.log(`skip link     ${skip.target} -> ${skip.targetExists ? 'ok' : 'MISSING'}`);
+  }
+
+  // Reduced motion is a request to remove animation, not to hurry it. Anything
+  // still running a transition longer than a frame has ignored it.
+  await page.emulateMediaFeatures([
+    { name: 'prefers-reduced-motion', value: 'reduce' },
+  ]);
+  await page.goto(`${URL}/#trends`, { waitUntil: 'networkidle2' });
+  await new Promise((resolve) => setTimeout(resolve, 800));
+  const motion = await page.evaluate(() => {
+    const offenders = [];
+    for (const element of document.querySelectorAll('*')) {
+      const style = window.getComputedStyle(element);
+      const longest = (value) =>
+        Math.max(
+          0,
+          ...value.split(',').map((part) => {
+            const seconds = parseFloat(part);
+            return Number.isFinite(seconds) ? seconds * (part.includes('ms') ? 0.001 : 1) : 0;
+          }),
+        );
+      const worst = Math.max(longest(style.transitionDuration), longest(style.animationDuration));
+      if (worst > 0.05) offenders.push(`${element.tagName.toLowerCase()} ${worst.toFixed(2)}s`);
+    }
+    return offenders.slice(0, 5);
+  });
+  if (motion.length > 0) {
+    problems.push(`prefers-reduced-motion ignored by: ${motion.join(', ')}`);
+  }
+  console.log(`reduced motion ${motion.length === 0 ? 'honoured' : 'IGNORED'}`);
 } finally {
   await browser.close();
 }

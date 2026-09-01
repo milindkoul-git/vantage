@@ -8,12 +8,13 @@
  * rendering an invented building.
  */
 
-import React, { Suspense, lazy } from 'react';
+import React, { Suspense, lazy, useCallback, useEffect, useRef } from 'react';
 import { FloorplanRadar2D } from '../../components/visualizations/FloorplanRadar2D';
 import type { RadarResponse, TwinResponse } from '../../contracts/types';
 import type { QueryLike } from '../../components/common/Panels';
 import { Loading, Panel, Resolved, Stat } from '../../components/common/Panels';
 import { useInvestigationStore } from '../../store/useInvestigationStore';
+import type { RendererStats } from '../../components/visualizations/SpatialTwin3D';
 
 // three.js is around three quarters of the JavaScript this app ships and is
 // used by this one panel. Splitting it out keeps it off the critical path for
@@ -36,6 +37,25 @@ export const DigitalTwinWorkspace: React.FC<{
   radarQuery: QueryLike<RadarResponse>;
 }> = ({ twinQuery, radarQuery }) => {
   const { selectedEntityId } = useInvestigationStore();
+  const setRendererStats = useInvestigationStore((state) => state.setRendererStats);
+
+  // The renderer reports every frame; the drawer is read by a person. Sampling
+  // twice a second keeps the store from re-rendering the whole shell sixty
+  // times a second to update four numbers nobody is watching that closely.
+  const lastSample = useRef(0);
+  const onStats = useCallback(
+    (stats: RendererStats) => {
+      const now = performance.now();
+      if (now - lastSample.current < 500) return;
+      lastSample.current = now;
+      setRendererStats(stats);
+    },
+    [setRendererStats],
+  );
+
+  // Nothing is rendering once this workspace is closed, so the drawer should
+  // stop claiming a reading rather than showing a frozen one.
+  useEffect(() => () => setRendererStats(null), [setRendererStats]);
 
   return (
     <div className="grid min-h-0 flex-1 grid-cols-1 gap-3 p-4 lg:grid-cols-[2fr_1fr]">
@@ -62,7 +82,11 @@ export const DigitalTwinWorkspace: React.FC<{
         >
           {(data) => (
             <Suspense fallback={<Loading what="the 3D renderer" />}>
-              <SpatialTwin3D twin={data} selectedEntityId={selectedEntityId} />
+              <SpatialTwin3D
+                twin={data}
+                selectedEntityId={selectedEntityId}
+                onStats={onStats}
+              />
             </Suspense>
           )}
         </Resolved>

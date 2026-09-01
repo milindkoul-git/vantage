@@ -13,6 +13,7 @@
 import React from 'react';
 import { AlertTriangle, Loader2, PowerOff, Search } from 'lucide-react';
 import type { Availability } from '../../contracts/types';
+import { AnimatedNumber } from './AnimatedNumber';
 
 // ---------------------------------------------------------------------------
 // surfaces
@@ -38,20 +39,30 @@ export const Panel: React.FC<{
   </section>
 );
 
-/** A label/value pair. `value` of `null`/`undefined` renders an em dash. */
+/** A label/value pair. `value` of `null`/`undefined` renders an em dash.
+ *
+ * A numeric value counts to its new reading rather than snapping; anything else
+ * is set outright. The distinction matters: a count that moved is worth drawing
+ * the eye to, and a label that changed is not the same kind of event.
+ */
 export const Stat: React.FC<{
   label: string;
   value: React.ReactNode;
   hint?: string;
   tone?: 'normal' | 'alert' | 'muted';
-}> = ({ label, value, hint, tone = 'normal' }) => {
+  decimals?: number;
+}> = ({ label, value, hint, tone = 'normal', decimals = 0 }) => {
   const empty = value === null || value === undefined || value === '';
   const color = empty || tone === 'muted' ? '#6B5545' : tone === 'alert' ? '#B33A2E' : '#E8E2D4';
   return (
     <div className="flex flex-col gap-0.5" title={hint}>
       <span className="stamp text-ink-faint">{label}</span>
       <span className="font-mono text-sm tabular-nums" style={{ color }}>
-        {empty ? '—' : value}
+        {typeof value === 'number' ? (
+          <AnimatedNumber value={value} decimals={decimals} />
+        ) : (
+          (empty ? '—' : value)
+        )}
       </span>
     </div>
   );
@@ -61,8 +72,48 @@ export const Stat: React.FC<{
 // the three not-showing-data states
 // ---------------------------------------------------------------------------
 
+/**
+ * The frame the three not-showing-data states share.
+ *
+ * They are a third of what this console displays - a single-camera run has four
+ * workspaces that legitimately have nothing in them - so they get composed
+ * rather than left as centred grey text. The shape is the same each time so the
+ * three read as one family: a mark, a stamped headline, a sentence, and where
+ * there is one, the command that would change the situation.
+ */
+const State: React.FC<{
+  mark: React.ReactNode;
+  rule: string;
+  headline: React.ReactNode;
+  headlineColor: string;
+  body?: React.ReactNode;
+  hint?: React.ReactNode;
+  action?: React.ReactNode;
+}> = ({ mark, rule, headline, headlineColor, body, hint, action }) => (
+  <div className="flex h-full min-h-[140px] flex-col items-center justify-center px-6 py-8 text-center">
+    <div
+      className="mb-3 flex h-9 w-9 items-center justify-center rounded-sm border"
+      style={{ borderColor: `${rule}33`, backgroundColor: `${rule}0F`, color: rule }}
+      aria-hidden
+    >
+      {mark}
+    </div>
+    <p className="stamp" style={{ color: headlineColor }}>
+      {headline}
+    </p>
+    {/* A hairline the width of the headline, which is what stops the block
+        reading as a paragraph that happens to be centred. */}
+    <span className="my-2 block h-px w-10" style={{ backgroundColor: `${rule}40` }} aria-hidden />
+    {body && <p className="max-w-md text-tiny leading-relaxed text-ink-faint">{body}</p>}
+    {hint && (
+      <div className="mt-2 max-w-md text-micro leading-relaxed text-ink-faint/75">{hint}</div>
+    )}
+    {action && <div className="mt-3">{action}</div>}
+  </div>
+);
+
 export const Loading: React.FC<{ what?: string }> = ({ what = 'data' }) => (
-  <div className="flex h-full min-h-[120px] items-center justify-center gap-2 text-ink-faint">
+  <div className="flex h-full min-h-[140px] items-center justify-center gap-2 text-ink-faint">
     <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden />
     <span className="stamp">Reading {what}…</span>
   </div>
@@ -77,21 +128,25 @@ export const Unavailable: React.FC<{ what: string; reason?: string; hint?: React
   reason,
   hint,
 }) => (
-  <div className="flex h-full min-h-[120px] flex-col items-center justify-center gap-2 px-6 text-center">
-    <PowerOff className="h-4 w-4 text-ink-faint" aria-hidden />
-    <p className="stamp text-brass">{what} unavailable</p>
-    {reason && <p className="max-w-md text-tiny leading-relaxed text-ink-faint">{reason}</p>}
-    {hint && <div className="max-w-md text-micro leading-relaxed text-ink-faint/80">{hint}</div>}
-  </div>
+  <State
+    mark={<PowerOff className="h-4 w-4" />}
+    rule="#B08D57"
+    headlineColor="#B08D57"
+    headline={`${what} unavailable`}
+    body={reason}
+    hint={hint}
+  />
 );
 
 /** Running, connected, and genuinely nothing to show. */
 export const Empty: React.FC<{ what: string; hint?: React.ReactNode }> = ({ what, hint }) => (
-  <div className="flex h-full min-h-[120px] flex-col items-center justify-center gap-2 px-6 text-center">
-    <Search className="h-4 w-4 text-ink-faint/60" aria-hidden />
-    <p className="stamp text-ink-faint">{what}</p>
-    {hint && <div className="max-w-md text-micro leading-relaxed text-ink-faint/80">{hint}</div>}
-  </div>
+  <State
+    mark={<Search className="h-4 w-4" />}
+    rule="#6B5545"
+    headlineColor="#6B5545"
+    headline={what}
+    hint={hint}
+  />
 );
 
 /** The request itself failed. Distinct from the subsystem being off. */
@@ -100,21 +155,28 @@ export const Failed: React.FC<{ what: string; error: unknown; onRetry?: () => vo
   error,
   onRetry,
 }) => (
-  <div className="flex h-full min-h-[120px] flex-col items-center justify-center gap-2 px-6 text-center">
-    <AlertTriangle className="h-4 w-4 text-string-red" aria-hidden />
-    <p className="stamp text-string-red">Could not load {what}</p>
-    <p className="max-w-md break-words text-tiny leading-relaxed text-ink-faint">
-      {error instanceof Error ? error.message : String(error)}
-    </p>
-    {onRetry && (
-      <button
-        onClick={onRetry}
-        className="stamp mt-1 rounded-sm border border-brass/30 px-2 py-1 text-brass transition-colors hover:bg-brass/10"
-      >
-        Retry
-      </button>
-    )}
-  </div>
+  <State
+    mark={<AlertTriangle className="h-4 w-4" />}
+    rule="#B33A2E"
+    headlineColor="#B33A2E"
+    headline={`Could not load ${what}`}
+    body={
+      <span className="break-words font-mono text-micro">
+        {error instanceof Error ? error.message : String(error)}
+      </span>
+    }
+    action={
+      onRetry && (
+        <button
+          type="button"
+          onClick={onRetry}
+          className="stamp rounded-sm border border-brass/30 px-3 py-1.5 text-brass transition-colors hover:bg-brass/10"
+        >
+          Retry
+        </button>
+      )
+    }
+  />
 );
 
 // ---------------------------------------------------------------------------

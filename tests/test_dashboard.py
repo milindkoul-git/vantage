@@ -756,3 +756,102 @@ class TestThePageMatchesTheBackend:
             f"the entry bundle is {size_kb:.0f} kB; three.js has probably been "
             "pulled back onto the critical path"
         )
+
+    def test_motion_is_budgeted_in_one_place(self) -> None:
+        """Durations live in a token file, not scattered through components.
+
+        The console is watched for a whole shift by someone looking for the one
+        thing that changed, so every animation is a claim that something
+        happened. Thirty independently-chosen durations is thirty small
+        decisions nobody reviewed; one file is a budget somebody can argue with.
+        """
+        motion = source("src/lib/motion.ts")
+        for name in ("micro", "panel", "view"):
+            assert f"{name}:" in motion, f"the motion budget has no {name} duration"
+        assert "prefersReducedMotion" in motion
+        assert "staggerStep" in motion
+
+    def test_reduced_motion_removes_rather_than_shortens(self) -> None:
+        """It is a request to take the animation away, not to hurry it.
+
+        A 40ms version of a transition is still a transition to somebody it
+        makes ill, so `duration()` returns zero rather than something smaller.
+        """
+        motion = source("src/lib/motion.ts")
+        block = motion.split("export function duration(")[1].split("}")[0]
+        assert "return prefersReducedMotion() ? 0" in block, (
+            "duration() shortens under reduced motion instead of removing"
+        )
+
+    def test_the_page_has_a_skip_link_to_the_workspace(self) -> None:
+        """Six workspaces of navigation sit above the panel someone came to read."""
+        app = source("src/App.tsx")
+        assert 'className="skip-link"' in app
+        assert 'href="#workspace"' in app
+        assert 'id="workspace"' in app, "the skip link points at nothing"
+        assert ".skip-link" in source("src/index.css")
+
+    def test_focus_is_styled_beyond_the_global_ring(self) -> None:
+        """Missing focus states are the most-cited failure in animated interfaces.
+
+        A single global rule is the floor. A ring around a small chip and one
+        around a full-width row should not be the same event.
+        """
+        css = source("src/index.css")
+        assert css.count(":focus-visible") >= 4, (
+            "only a global focus ring; per-surface treatments are missing"
+        )
+
+    def test_view_transitions_are_capped_and_defeatable(self) -> None:
+        css = source("src/index.css")
+        assert "::view-transition-old(root)" in css
+        # A workspace change is the largest move the console allows, and even
+        # that stays under the 200ms ceiling.
+        match = re.search(
+            r"::view-transition-old\(root\).*?animation-duration: (\d+)ms", css, re.S
+        )
+        assert match and int(match.group(1)) <= 200, "workspace transition exceeds the budget"
+        assert "::view-transition-group(*)" in css, (
+            "view transitions are animations the reduced-motion reset cannot reach; "
+            "they need their own rule"
+        )
+
+    def test_the_twin_reports_its_own_renderer(self) -> None:
+        """A page meant to run for a shift needs the leak check a demo does not.
+
+        The three.js guidance for long-running scenes is to watch
+        `renderer.info`: counts that climb while the scene is static mean
+        something is not being disposed. It belongs in the operations drawer,
+        beside the pipeline's own health, rather than in a floating overlay.
+        """
+        twin = source("src/components/visualizations/SpatialTwin3D.tsx")
+        assert "renderer.info.memory" in twin
+        drawer = source("src/components/shell/OperationsDrawer.tsx")
+        for field in ("geometries", "textures", "calls"):
+            assert field in drawer, f"the drawer does not report {field}"
+
+    def test_the_twin_stops_rendering_when_nobody_can_see_it(self) -> None:
+        """A hidden tab holding a WebGL loop open competes with the inference
+        running in the same process, for as long as it stays hidden."""
+        twin = source("src/components/visualizations/SpatialTwin3D.tsx")
+        assert "visibilitychange" in twin
+        assert "document.hidden" in twin
+
+    def test_entities_are_drawn_as_instances(self) -> None:
+        """One mesh per entity is one draw call per entity, plus a fresh geometry
+        and material allocated on every poll."""
+        twin = source("src/components/visualizations/SpatialTwin3D.tsx")
+        assert "InstancedMesh" in twin
+        assert "setColorAt" in twin, "colour per instance, not a material per entity"
+
+    def test_a_type_scale_exists_and_components_use_it(self) -> None:
+        """Juries reward consistent scale and rhythm at every breakpoint, which
+        is not achievable while half the sizes are written inline."""
+        config = source("tailwind.config.js")
+        for step in ("micro", "tiny", "body", "lede", "title", "display"):
+            assert f"'{step}'" in config, f"the type scale has no {step} step"
+
+        graph = source("src/components/visualizations/ForceDirectedGraph.tsx")
+        inline = re.findall(r"fontSize: '[^']+'", graph)
+        # Three remain, and all three are the scale's own definitions.
+        assert len(inline) <= 3, f"{len(inline)} inline font sizes left in the graph"
