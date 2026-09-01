@@ -89,8 +89,8 @@ replaceable:
 - **Box overlay + detection telemetry on the HUD**, with carried-forward detections drawn
   dashed so a stale box is never mistaken for a fresh one.
 
-**284 tests** — 276 needing neither a camera, a model file, nor an inference runtime, plus
-8 that exercise real weights and skip cleanly without them.
+**1117 tests** — 1095 needing neither a camera, a model file, nor an inference runtime, plus
+22 that exercise real weights and skip cleanly without them.
 
 ---
 
@@ -244,6 +244,16 @@ long it has lasted.
 | `sitting_down`, `standing_up` | stable-posture transitions | yes |
 | `falling` | upright to lying, fast | yes |
 | `arm_raised` | wrist above shoulder, sustained | yes |
+
+**Only people have activities, and only when something was actually seen.** Both
+gates come from running this on real footage rather than on scenarios. Left open
+to every tracked class, the engine reported that 73% of what it saw on five
+street clips was walking or running - most of it about cars, potted plants,
+traffic lights and handbags, with `potted plant_2 is running` reaching the event
+log. And an entity whose box was predicted rather than detected is skipped
+entirely: a coasting track drifts on the tracker's own motion model, and that
+drift was being measured as speed. `activity.labels` is the first gate and is
+configuration - widen it for a dog, not for a traffic light.
 
 Several can hold at once, deliberately: a person can be walking with an arm up,
 and forcing a single winner would discard one of two true statements. Every
@@ -755,7 +765,7 @@ affine, so it will put two people in different rooms in different places but wil
 not measure the distance between them. With no cameras it is empty and the
 dashboard reports that there is no facility model.
 
-**1079 tests.**
+**1117 tests.**
 
 
 ---
@@ -1680,7 +1690,7 @@ this is reported in the `PREC` column rather than hidden. And ONNX Runtime beati
 
 | Check | Result |
 |---|---|
-| Test suite | 380 passed in ~3.0 s with no camera, model or runtime; +8 model-backed |
+| Test suite | 1095 passed with no camera, model or runtime; +22 model-backed |
 | Synthetic source, headless | ~2 400 fps at 640×480 |
 | Webcam `webcam:0`, headless | 30.3 fps mean over 60 frames, 0 dropped, queue peak 1/8, acquisition p50 6.1 ms, delivery latency p95 0.3 ms |
 | File playback (960×540, 100 frames) | 100/100 delivered, 0 dropped, `block` policy auto-selected, ~846 fps decode |
@@ -1845,6 +1855,104 @@ The second row is ByteTrack's whole point. A partially visible object still prod
 low-scoring box, the second association pass consumes it, and identity is never at risk.
 Only total disappearance is time-limited, and that limit is a configured number rather than
 an emergent one.
+
+### Real footage, and what it changed
+
+Everything above this line is measured against synthetic sources and seeded
+ground-truth scenarios, which is what makes it repeatable. It is also what makes
+it incomplete: a harness only tests the cases someone thought to script.
+
+Five clips from Wikimedia Commons, chosen for the ways they differ rather than
+for being easy — 2,652 frames of real street footage through the whole pipeline.
+
+| clip | scene | licence |
+|---|---|---|
+| square | 1080p street corner: a parked van, a few people, traffic furniture | CC BY 3.0 |
+| station | 1080p far-field tram stop, people small in frame | CC BY 3.0 |
+| street | 720p dense pedestrian street, two dozen people at once | CC BY-SA 3.0 |
+| twopeople | 320×240 overhead crowd, targets a few dozen pixels tall | CC BY 4.0 |
+| underpass | 1080p walking POV in near-darkness | CC BY 3.0 |
+
+Reproducible: the harness is `tools/clip_report.py`, the clips are not in the
+repository but are named above and are one download each from Wikimedia Commons.
+
+```bash
+python tools/clip_report.py samples/*.webm samples/*.ogv --frames 600 --out report
+```
+
+It is not a build gate and does not pretend to be one - ordinary footage carries
+no labels, so nothing here scores accuracy. `vantage track eval`, `activity eval`
+and `spatial eval` remain the gates. What this measures is everything checkable
+*without* labels, which turned out to be where the problems were.
+
+**What held.** 26–48 fps at 1080p with detection, tracking and pose all running,
+zero dropped frames, detection at 10–15 ms, memory flat. Every stage guard clean
+across all five clips: no failures, nothing disabled. Three container formats
+decoded, the dark clip correctly reported *"source is delivering blank frames"*,
+and every file ended cleanly at EOF. Detection and tracking on people are good.
+
+**What did not.** The pipeline raised **138 events across the five clips, and not
+one of them was real** — 134 "running" and 4 "fall", on footage of people walking
+and a van parked at a kerb. Two causes, both measured:
+
+- **73% of everything the activity engine reported was about an object that
+  cannot do the activity.** It ran the recogniser over every tracked class, and
+  the default rules named no class at all. Actual rows from the store:
+  `potted plant_2 is running`, `car_7 is running`, `handbag_12 is running`,
+  a television walking.
+- **A further 20–26% came from boxes with nothing behind them.**
+  `EntityState.observed` was computed by the state estimator, documented as
+  load-bearing, and read by no consumer. A coasting track keeps moving on the
+  tracker's motion model; that drift was being measured as speed.
+
+Three more, smaller and just as concrete:
+
+- **`pose: N people estimated` reported the last frame, not the run.** One clip
+  read "0 people estimated" for a stage that had produced 305 skeletons in 300
+  frames. It made a working stage look dead in every run summary.
+- **Relationship pairing had a cliff at six entities.** Below it every pair was
+  a candidate, including two fragments of one person left by an id switch; at six
+  and above nothing ever was. A corridor with one or two people produced 34
+  associations; a street with 24 people at once produced none, permanently.
+- **A far-field standing person read as `lying`,** which is the input to the only
+  ALERT in the default rule set.
+
+**And one thing that turned out not to be broken.** Events arriving as one
+incident each looked like a correlator failure. Tested directly, it attaches
+correctly whenever the entity id is stable — the ids were churning underneath it.
+Track fragmentation is the cause; the correlator is the victim.
+
+### After the fixes
+
+Same five clips, same command:
+
+| | before | after |
+|---|---|---|
+| events raised | 138 | 57 |
+| ...on non-people | 49 | **0** |
+| false `fall` ALERTS | 4 | **0** |
+| pose skeletons reported (station) | 0 | 1,069 |
+| associations, near-empty underpass | 34 | 7 |
+| associations, crowded street | 0 | 282 |
+
+The posture fix is worth its own note, because the obvious version of it does not
+work. A confidence floor high enough to remove all 77 false `lying` readings
+(0.40) also discards **92.5% of every correct posture** — the distributions
+overlap almost entirely. What separates them is the box: all 77 sat inside boxes
+0.34–0.41 as wide as they were tall, which is an upright person. The skeleton and
+the box are independent readings, and where they contradict each other the box —
+drawn by a detector that had the whole frame — is the better one. Requiring a
+lying body to have a box at least 0.6 as wide as it is tall removes all 77 and
+touches no other posture.
+
+**What is still wrong.** The 57 remaining events are all "running", all on
+people, and most are still false. Speed is measured in entity heights per second,
+and someone walking toward the camera has a box that grows while their feet cross
+the frame — a walk reads as a run. That is a real limitation of a
+scale-normalised speed with no ground plane, not a threshold that wants nudging,
+and it is listed in §8 rather than papered over. Track fragmentation is the other
+one: person tracks live a median of 1.9–5.0 seconds, which starves incident
+correlation of the stable identity it needs.
 
 ### Runtime validation
 
@@ -2090,6 +2198,30 @@ Both are handled - in `[tool.setuptools.package-data]` and in
 than assumed.
 
 ## 8. Known limitations
+
+**A walk toward the camera reads as a run.** Speed is measured in entity heights
+per second, which is what makes it survive a change of resolution and a change of
+distance. It does not survive a change of *depth*: someone approaching the camera
+has a box that grows while their feet cross the frame, and the ratio spikes. On
+five real street clips this is the whole of the remaining false-positive
+population - 57 "running" notices, all on genuine people, most of them walking.
+Fixing it properly needs a ground plane or an optical-flow estimate of camera
+relative motion, not a higher `activity.running_speed`; raising the threshold
+only trades these for missed runs.
+
+**Tracks fragment every few seconds on real footage.** Measured across the same
+clips, a person track lives a median of 1.9-5.0 seconds. That is not fatal on its
+own - the boxes are on real people throughout - but everything keyed on a stable
+identity inherits it. Incident correlation is the clearest case: it attaches
+events correctly whenever the id holds, and each fragment starts a new incident
+when it does not, so a scene produces roughly one incident per event.
+
+**Zone rules ignore predicted boxes; the spatial relations beside them do not.**
+`EntitySpatial.observed` gates zone entry, exit and dwell, so a coasting box
+drifting over a boundary raises nothing. The proximity and approach relations in
+the same result are still computed from every tracked entity, coasting included.
+That is a smaller version of the bug that produced `potted plant_2 is running`
+and it has not been measured on real footage yet.
 
 **Cross-camera identity is appearance-only.** `vantage facility` re-identifies a
 person across cameras from an HSV appearance descriptor and a spatial-temporal
@@ -2389,13 +2521,27 @@ has not been verified.
 ## 10. Development
 
 ```bash
-pytest                          # 284 tests, ~2 s
-pytest -m "not model"           # 276 tests needing no weights and no runtime
-pytest -m model                 # 8 tests against real weights (skip if absent)
-pytest -m hardware              # (reserved) tests that need a physical camera
-vantage info --json             # environment report for a bug reference
-vantage run --log-format json   # structured logs for aggregation
-vantage bench --json            # backend measurements as machine-readable output
+pytest                                 # 1117 tests
+pytest -m "not model and not hardware" # 1095 needing no weights and no runtime
+pytest -m model                        # 22 against real weights (skip if absent)
+pytest -m hardware                     # (reserved) tests that need a physical camera
+vantage track eval                     # the three ground-truth gates; each exits
+vantage activity eval                  #   non-zero on a regression, so each can
+vantage spatial eval                   #   gate a build
+python tools/clip_report.py CLIP...    # run real footage and report what happened
+vantage info --json                    # environment report for a bug reference
+vantage run --log-format json          # structured logs for aggregation
+vantage bench --json                   # backend measurements as machine-readable output
+```
+
+The front end has its own checks, run from `frontend/`:
+
+```bash
+npm run typecheck   # tsc, strict
+npm run lint        # eslint
+npm run build       # rebuild the bundle the dashboard serves (committed)
+npm run smoke -- --url http://localhost:8080   # load the page in Chrome and
+                                               # fail on any console error
 ```
 
 Conventions: type hints throughout, dependencies pointing inward, no silent exception

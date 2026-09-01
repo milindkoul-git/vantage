@@ -470,6 +470,19 @@ class ActivityConfig:
 
     enabled: bool = True
 
+    labels: tuple[str, ...] = ("person",)
+    """Which detected classes have activities at all.
+
+    "Walking", "running", "sitting down" and "falling" are things people do. Left
+    open to every class, this engine reported that 73% of what it saw on five
+    street clips was walking or running - most of it about cars, potted plants,
+    traffic lights and handbags. `potted plant_2 is running` reached the event
+    log.
+
+    Widen it only for classes the rules genuinely describe. A dog walks and runs;
+    a traffic light does not.
+    """
+
     walking_speed: float = 0.15
     """Entity heights per second above which a moving entity is walking. Kept
     equal to ``state.moving_above``; see the cross-check in
@@ -526,6 +539,12 @@ class ActivityConfig:
                 raise ConfigError(f"activity.{name} must be >= 0")
         if self.history < 2:
             raise ConfigError("activity.history must be >= 2")
+        if not self.labels or not any(label.strip() for label in self.labels):
+            raise ConfigError(
+                "activity.labels cannot be empty: it decides which detected "
+                "classes have activities at all, and an empty list would silence "
+                "the whole subsystem without disabling it"
+            )
 
 
 @dataclass(frozen=True, slots=True)
@@ -910,8 +929,39 @@ class RelationshipsConfig:
 
     enabled: bool = False
 
+    labels: tuple[str, ...] = ("person",)
+    """Which detected classes can be in an association at all.
+
+    The vocabulary here - co-occurrence, recurrent proximity, following - is
+    about people who keep turning up together. A car parked beside a bench is
+    not an association, and left ungated the graph filled with them: one clip of
+    an empty underpass produced 28 pairs, between a person, a television and a
+    skateboard."""
+
     min_strength: float = 0.0
     """Floor for an edge to be reported at all."""
+
+    proximity_gate: float = 0.15
+    """How close two entities must be, as a fraction of the frame, to be
+    considered a pair worth scoring at all.
+
+    The gate exists to keep the work near-linear in a crowd rather than
+    quadratic, and it replaced a rule that read "pair everything when there are
+    five entities or fewer". That cliff had the behaviour exactly backwards:
+    a clip with one or two people produced 34 associations, all of them between
+    fragments of the same person left by an id switch, while a street with 24
+    people in frame at once produced none at all, permanently.
+
+    MEASURED across three clips at 0.06, 0.10, 0.15 and 0.25: the number of
+    pairs *tracked* scales with the gate - a dense pedestrian street goes from 87
+    to 519 - while the number that actually score above 0.20 stays at exactly one
+    throughout. The gate bounds the work; the scorer decides what is real. 0.15
+    is therefore chosen as the value that keeps a crowded frame to a few hundred
+    tracked pairs rather than the thousand-entry cap, without excluding a pair
+    the scorer would have kept.
+
+    Widen it for a camera looking down a long corridor, where two people a
+    seventh of the frame apart are far from each other in metres."""
 
     persist_interval_s: float = 30.0
     """How often the graph is flushed to the store, when there is one."""
@@ -919,6 +969,11 @@ class RelationshipsConfig:
     def __post_init__(self) -> None:
         if not 0.0 <= self.min_strength <= 1.0:
             raise ConfigError("relationships.min_strength must be between 0 and 1")
+        if not 0.0 < self.proximity_gate <= 1.5:
+            raise ConfigError(
+                "relationships.proximity_gate is a fraction of the frame and must be "
+                f"in (0, 1.5]; got {self.proximity_gate}"
+            )
         if self.persist_interval_s <= 0:
             raise ConfigError("relationships.persist_interval_s must be positive")
 

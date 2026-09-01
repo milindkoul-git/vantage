@@ -1,7 +1,20 @@
 """The activity engine: state and pose in, activities out.
 
-Owns three things the recogniser should not have to: the clock, the pairing of
-entities to their poses, and pruning.
+Owns four things the recogniser should not have to: the clock, the pairing of
+entities to their poses, pruning, and which entities are even eligible.
+
+Eligibility is not a detail. Measured on five street clips, this engine used to
+report that 73% of everything it saw was walking or running - and the majority
+of that was about cars, potted plants, traffic lights and handbags, because it
+ran the recogniser over every tracked class. A further fifth came from coasting
+boxes: predictions for objects the detector had stopped seeing, whose drift the
+state estimator dutifully measured as motion. `potted plant_2 is running` was a
+real event in a real store.
+
+Two gates fix it, and both are about what the words mean. "Walking", "running",
+"sitting down" and "falling" are things people do, so only entities whose label
+says person are considered. And a coasting box is a guess about where something
+went, not an observation of it, so nothing is asserted from one.
 
 Time is accumulated from the tracker's own elapsed values rather than read from
 a wall or monotonic clock. That is not fussiness - it is what makes a recorded
@@ -12,6 +25,8 @@ loiter has to mean ten seconds of *footage*, whatever the machine was doing.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+
 from vantage.activity.base import Recognizer
 from vantage.activity.contracts import (
     Activity,
@@ -21,6 +36,7 @@ from vantage.activity.contracts import (
 )
 from vantage.activity.hoi import HOIFusionEngine
 from vantage.activity.recognizer import ActivityParams, RuleRecognizer
+from vantage.core.errors import ConfigError
 from vantage.core.logging import get_logger
 from vantage.perception.contracts import Detection
 from vantage.pose.contracts import PoseResult
@@ -32,10 +48,17 @@ log = get_logger(__name__)
 class ActivityEngine:
     """Runs a :class:`~vantage.activity.base.Recognizer` over each frame."""
 
-    def __init__(self, recognizer: Recognizer | None = None) -> None:
+    def __init__(
+        self,
+        recognizer: Recognizer | None = None,
+        labels: Sequence[str] = ("person",),
+    ) -> None:
         self._recognizer: Recognizer = recognizer or RuleRecognizer()
         self._hoi = HOIFusionEngine()
         self._elapsed = 0.0
+        self._labels = frozenset(label.strip().lower() for label in labels if label.strip())
+        if not self._labels:
+            raise ConfigError("activity.labels cannot be empty; it decides who has activities")
 
     @property
     def recognizer(self) -> Recognizer:
@@ -62,6 +85,14 @@ class ActivityEngine:
 
         entities: list[EntityActivity] = []
         for entity_state in state:
+            if entity_state.label.lower() not in self._labels:
+                continue
+            if not entity_state.observed:
+                # A coasting entity's box is a prediction. Its apparent motion is
+                # the predictor's drift, and reporting an activity from it is
+                # reporting on something nobody currently sees. The pose engine
+                # already refuses these; so does this.
+                continue
             p_pose = poses.get(entity_state.track_id)
             act = self._recognizer.observe(entity_state, p_pose, self._elapsed)
             # Check Human-Object Interactions if detections available
@@ -92,6 +123,9 @@ class ActivityEngine:
                     )
             entities.append(act)
 
+        # Forgetting is keyed on everything the tracker still holds, not on what
+        # was eligible this frame: an entity skipped for one coasting frame must
+        # keep the history that makes its dwell and its transitions meaningful.
         self._recognizer.forget({entity_state.track_id for entity_state in state})
 
         return ActivityResult(
@@ -117,7 +151,8 @@ def build_activity_engine(config=None) -> ActivityEngine:
         from vantage.activity.learned import LearnedActionClassifier
 
         return ActivityEngine(
-            LearnedActionClassifier(transient_hold_s=getattr(config, "transient_hold_s", 1.5))
+            LearnedActionClassifier(transient_hold_s=getattr(config, "transient_hold_s", 1.5)),
+            labels=config.labels,
         )
     return ActivityEngine(
         RuleRecognizer(
@@ -134,5 +169,6 @@ def build_activity_engine(config=None) -> ActivityEngine:
                 min_keypoint_confidence=config.min_keypoint_confidence,
                 history=config.history,
             )
-        )
+        ),
+        labels=config.labels,
     )

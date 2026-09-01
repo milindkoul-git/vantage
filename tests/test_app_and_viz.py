@@ -303,3 +303,132 @@ class TestCli:
         parser = build_parser()
         with pytest.raises(SystemExit):
             parser.parse_args(["--help"])
+
+
+class TestPoseSummaryCountsTheRun:
+    """`people` is a run total, not whatever the last frame happened to hold.
+
+    Found by running five street clips through the pipeline: the summary read
+    "pose: 600 passes, 0 people estimated" for a stage that had produced 305
+    skeletons over 300 frames. The only hint anything had happened was the
+    mean-per-person timing beside it. A reader would reasonably conclude the
+    stage was broken.
+    """
+
+    @staticmethod
+    def summary(people_per_frame, skipped_per_frame=(0, 0, 0)):
+        from types import SimpleNamespace
+
+        from vantage.app import _pose_summary
+        from vantage.core.metrics import LatencyTracker
+
+        estimator = SimpleNamespace(
+            info=SimpleNamespace(
+                model="rtmpose-s",
+                backend="openvino",
+                device="gpu",
+                license="Apache-2.0",
+                num_keypoints=17,
+            )
+        )
+
+        class LastFrame:
+            """Stands in for a PoseResult: it is asked its length and its skips."""
+
+            skipped = skipped_per_frame[-1]
+
+            def __len__(self) -> int:
+                return people_per_frame[-1]
+
+        latest = LastFrame()
+        return _pose_summary(
+            estimator,
+            LatencyTracker(window=10),
+            latest,
+            passes=len(people_per_frame),
+            people_total=sum(people_per_frame),
+            skipped_total=sum(skipped_per_frame),
+        )
+
+    def test_a_busy_run_that_ends_empty_still_reports_its_work(self) -> None:
+        detail = self.summary([4, 5, 0])
+        assert detail["people"] == 9
+        assert detail["people_at_end"] == 0
+
+    def test_skipped_is_also_a_total(self) -> None:
+        detail = self.summary([1, 1, 1], skipped_per_frame=(2, 3, 0))
+        assert detail["skipped"] == 5
+
+
+class TestWhoIsFedToTheRelationshipGraph:
+    """Associations are between people the camera can currently see.
+
+    Both gates were missing when the graph was first wired into the
+    single-camera run, and a clip of an almost-empty underpass produced 28
+    associations - between a person, a television and a skateboard, tracked
+    while nobody was being detected at all.
+    """
+
+    @staticmethod
+    def feed(rows, labels=frozenset({"person"})):
+        from types import SimpleNamespace
+
+        import numpy as np
+
+        from vantage.app import _observe_relationships
+        from vantage.perception.contracts import BoundingBox
+        from vantage.state.contracts import StateResult
+
+        states = StateResult(
+            states=tuple(rows), source_id="t", frame_index=0, capture_wall=100.0, elapsed_s=0.03
+        )
+        seen: list = []
+        service = SimpleNamespace(
+            tracker=SimpleNamespace(
+                process_frame=lambda **kw: seen.append(kw["active_entities"])
+            ),
+            maybe_persist=lambda *a: None,
+        )
+        tracks = [
+            SimpleNamespace(track_id=s.track_id, box=BoundingBox(10.0, 10.0, 30.0, 90.0))
+            for s in rows
+        ]
+        frame = SimpleNamespace(image=np.zeros((100, 100, 3), dtype=np.uint8))
+        _observe_relationships(
+            service,
+            SimpleNamespace(tracks=tracks),
+            states,
+            frame,
+            "cam",
+            labels,
+        )
+        return seen[0] if seen else []
+
+    @staticmethod
+    def state(track_id: int, label: str, observed: bool = True):
+        from vantage.state.contracts import EntityState, MotionState
+
+        return EntityState(
+            track_id=track_id,
+            entity_id=f"{label}_{track_id}",
+            label=label,
+            motion=MotionState.MOVING,
+            speed=0.5,
+            dwell_s=0.0,
+            bearing_deg=90.0,
+            distance=0.0,
+            age_s=5.0,
+            observed=observed,
+        )
+
+    def test_two_people_are_fed(self) -> None:
+        fed = self.feed([self.state(1, "person"), self.state(2, "person")])
+        assert {row[0] for row in fed} == {"person_1", "person_2"}
+
+    def test_a_television_is_not(self) -> None:
+        fed = self.feed([self.state(1, "person"), self.state(2, "tv")])
+        assert fed == []  # one person left is not a pair
+
+    def test_a_coasting_person_is_not(self) -> None:
+        fed = self.feed([self.state(1, "person"), self.state(2, "person", observed=False)])
+        assert fed == []

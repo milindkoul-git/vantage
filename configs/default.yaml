@@ -124,6 +124,21 @@ activity:
   # whenever tracking and state are. Without pose, the posture-derived
   # activities simply never fire.
   enabled: true
+
+  labels: ["person"]
+  # Which detected classes have activities at all.
+  #
+  # "Walking", "running", "sitting down" and "falling" are things people do.
+  # MEASURED with this left open to every class, on five street clips: 73% of
+  # everything the engine reported was about a car, a potted plant, a traffic
+  # light or a handbag, and `potted plant_2 is running` reached the event log.
+  # Widen it only for classes the rules genuinely describe - a dog walks and
+  # runs, a traffic light does not.
+  #
+  # The engine also ignores entities whose box was predicted rather than
+  # detected this frame. A coasting box drifts on the tracker's motion model,
+  # and that drift was a further fifth of everything reported.
+
   walking_speed: 0.15      # heights per second; keep equal to state.moving_above
   running_speed: 1.30      # and above which it is running
   sustain_s: 0.4           # how long a continuous rule must hold before reporting
@@ -141,6 +156,11 @@ activity:
   # low-confidence fall - because a hedged alert trains whoever reads it to
   # ignore the real one. This is not a certified fall detector; see the
   # limitations in README S8 before relying on it.
+  #
+  # A second guard sits under this one, in the posture classifier rather than
+  # here: a skeleton reading "lying" inside a box taller than it is wide is a
+  # contradiction, not a fall, and is reported as UNKNOWN. On the same five
+  # clips that produced four false fall ALERTS, it produces none.
 
 # Adaptive load shedding lives under `app:` above. Shown here as a comment
 # because it is nested, and because the strict loader rejects an unknown
@@ -330,7 +350,33 @@ relationships:
 
   enabled: false
 
+  labels: ["person"]
+  # An association is between people who keep turning up together. A car parked
+  # beside a bench is not one. Left ungated, a clip of an almost-empty underpass
+  # produced 28 associations - between a person, a television and a skateboard.
+  # Entities whose box was predicted rather than detected are ignored here too.
+
   min_strength: 0.0    # floor for an edge to be reported at all
+
+  proximity_gate: 0.15
+  # How close two entities must be, as a fraction of the frame, to be a pair
+  # worth scoring at all.
+  #
+  # This replaced a rule that read "pair everything when there are five entities
+  # or fewer", whose behaviour was exactly backwards: below six, every pair was
+  # a candidate including two fragments of one person left by an id switch;
+  # at six and above nothing ever was, because the other two gates cannot seed
+  # themselves on a single camera. MEASURED: a corridor with one or two people
+  # produced 34 associations, and a street with 24 people in frame produced none
+  # at all, permanently.
+  #
+  # MEASURED again to choose the value, at 0.06 / 0.10 / 0.15 / 0.25 on three
+  # clips: the number of pairs TRACKED scales with the gate - a dense street goes
+  # from 87 to 519 - while the number that actually SCORE above 0.20 stays at
+  # exactly one throughout. The gate bounds the work; the scorer decides what is
+  # real. Widen it for a camera down a long corridor, where two people a seventh
+  # of the frame apart are far from each other in metres.
+
   persist_interval_s: 30.0
   # How often the graph is flushed to the store. Every frame would rewrite the
   # whole graph thirty times a second; never would lose the session on a kill.

@@ -203,6 +203,14 @@ class EntitySpatial:
     ground_point: tuple[float, float] = (0.0, 0.0)
     """Where the entity meets the ground, in pixels."""
 
+    observed: bool = True
+    """Whether a detection backed this position, or it is a prediction.
+
+    Carried so a zone rule can decline to fire on a box nobody currently sees.
+    A coasting track keeps moving on the tracker's motion model, and a
+    prediction that drifts across a boundary is not somebody entering a room.
+    """
+
     @property
     def occupied(self) -> tuple[ZoneOccupancy, ...]:
         """Only the zones the entity is currently inside."""

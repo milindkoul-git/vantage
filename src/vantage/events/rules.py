@@ -198,6 +198,10 @@ def _zone_crossing_rule(wanted: ZoneEvent) -> Callable[[RuleSpec, SceneContext],
                 continue
             if not spec.wants_zone(occupancy.zone) or not spec.wants_label(entity.label):
                 continue
+            if not entity.observed:
+                # A predicted box drifting over a boundary is the tracker's
+                # motion model, not somebody walking through a door.
+                continue
             verb = "entered" if wanted is ZoneEvent.ENTERED else "left"
             events.append(
                 Event(
@@ -227,7 +231,7 @@ def _zone_dwell_rule(spec: RuleSpec, context: SceneContext) -> list[Event]:
         return []
     events: list[Event] = []
     for entity in context.spatial:
-        if not spec.wants_label(entity.label):
+        if not spec.wants_label(entity.label) or not entity.observed:
             continue
         for occupancy in entity.occupied:
             if not spec.wants_zone(occupancy.zone):
@@ -425,6 +429,7 @@ DEFAULT_RULES: tuple[RuleSpec, ...] = (
         severity=Severity.ALERT,
         cooldown_s=15.0,
         name="fall",
+        labels=("person",),
     ),
     RuleSpec(
         type="activity",
@@ -432,6 +437,7 @@ DEFAULT_RULES: tuple[RuleSpec, ...] = (
         severity=Severity.NOTICE,
         min_seconds=1.0,
         name="running",
+        labels=("person",),
     ),
     RuleSpec(
         type="activity",
@@ -439,14 +445,21 @@ DEFAULT_RULES: tuple[RuleSpec, ...] = (
         severity=Severity.NOTICE,
         cooldown_s=60.0,
         name="loitering",
+        labels=("person",),
     ),
     RuleSpec(type="zone_entry", severity=Severity.INFO, cooldown_s=2.0),
     RuleSpec(type="zone_exit", severity=Severity.INFO, cooldown_s=2.0),
 )
 """A default set that does something sensible with no configuration at all.
 
-Deliberately conservative: nothing here fires on a quiet scene, the only ALERT
-is a fall, and the zone rules do nothing until zones are drawn. A default that
-alerted on proximity or interaction would be noisy in exactly the deployments
-least able to tune it.
+Deliberately conservative: the only ALERT is a fall, and the zone rules do
+nothing until zones are drawn. A default that alerted on proximity or
+interaction would be noisy in exactly the deployments least able to tune it.
+
+The three activity rules name ``person`` explicitly, as belt to the activity
+engine's braces. It is the same question asked twice on purpose: the engine
+decides who has activities, and a rule decides who it will alert about, and a
+deployment that widens one has not thereby widened the other. Before either
+gate existed, five street clips produced 137 events of which none were real -
+mostly `potted plant_2 is running`.
 """

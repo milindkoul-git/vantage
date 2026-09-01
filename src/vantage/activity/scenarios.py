@@ -169,11 +169,33 @@ def make_pose(
     )
 
 
-def make_track(x: float, velocity: tuple[float, float], frame: int) -> Track:
+def make_track(
+    x: float,
+    velocity: tuple[float, float],
+    frame: int,
+    posture: Posture | None = None,
+) -> Track:
+    """One tracked person, with a box that matches the posture it is holding.
+
+    The box used to be a fixed portrait rectangle whatever the skeleton was
+    doing, so a scenario person lying on the floor still had the silhouette of
+    one standing up. That is not a shape a detector produces, and posture now
+    cross-checks the two: a horizontal torso inside an upright box is read as a
+    contradiction rather than as a fall. A harness that feeds an impossible
+    combination is testing something the world cannot present.
+    """
+    if posture is Posture.LYING:
+        # Lengthwise on the ground: as wide as the person is tall, and about a
+        # shoulder-width deep.
+        half_length = BOX_HEIGHT / 2.0
+        top = 40.0 + BOX_HEIGHT - 60.0
+        box = BoundingBox(x - half_length, top, x + half_length, top + 60.0)
+    else:
+        box = BoundingBox(x - 30.0, 40.0, x + 30.0, 40.0 + BOX_HEIGHT)
     return Track(
         track_id=1,
         entity_id="person_1",
-        box=BoundingBox(x - 30.0, 40.0, x + 30.0, 40.0 + BOX_HEIGHT),
+        box=box,
         label="person",
         class_id=0,
         confidence=0.9,
@@ -357,7 +379,7 @@ def generate(scenario: ActivityScenario) -> list[ScenarioFrame]:
         beat_start = time_s
         for _ in range(count):
             velocity = (beat.speed * BOX_HEIGHT, 0.0)
-            track = make_track(x, velocity, index)
+            track = make_track(x, velocity, index, beat.posture)
             pose = (
                 make_pose(beat.posture, x, track.box, beat.arm_raised)
                 if beat.posture is not None

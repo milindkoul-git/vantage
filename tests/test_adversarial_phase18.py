@@ -15,12 +15,33 @@ from vantage.scene.graph import SceneGraphSnapshot, TransientInteractionEdge
 
 # 1. False Relationship Resistance in Crowded Scenes
 def test_false_relationships_from_crowded_scenes() -> None:
-    tracker = PersistentRelationshipTracker(max_relationships=1000)
+    """Thirty people in shot must not become 435 associations.
 
-    # 30 entities in frame, but only 2 pairs have interaction edges
-    entities = [(f"person_{k}", 0.1 * (k % 10), 0.1 * (k // 10), 0.2, 0.0) for k in range(30)]
-    edge1 = TransientInteractionEdge("person_1", "person_2", "near", 0.05, 0.9, "near")
-    edge2 = TransientInteractionEdge("person_5", "person_6", "near", 0.05, 0.9, "near")
+    The entities are spread across the frame with two pairs standing together,
+    which is the shape of a real crowd. It matters that they are spread: an
+    earlier version of this test put all thirty within a tenth of the frame of
+    each other and asserted that only the scene-graph pairs were kept, which
+    passed for the wrong reason - the gate of the day switched itself off
+    entirely above five entities, so *nothing* was ever paired in a crowd. Two
+    people standing shoulder to shoulder in a station concourse are exactly the
+    pair this subsystem exists to notice.
+    """
+    tracker = PersistentRelationshipTracker(max_relationships=1000, proximity_gate=0.15)
+
+    # Twenty-six strangers on a grid whose spacing exceeds the gate, and two
+    # pairs standing together well clear of them.
+    entities = [
+        (f"person_{k}", 0.05 + 0.18 * (k % 6), 0.05 + 0.18 * (k // 6), 0.2, 0.0)
+        for k in range(26)
+    ]
+    entities += [
+        ("person_a", 0.20, 0.95, 0.2, 0.0),
+        ("person_b", 0.23, 0.96, 0.2, 0.0),
+        ("person_c", 0.75, 0.95, 0.2, 0.0),
+        ("person_d", 0.78, 0.96, 0.2, 0.0),
+    ]
+    edge1 = TransientInteractionEdge("person_a", "person_b", "near", 0.05, 0.9, "near")
+    edge2 = TransientInteractionEdge("person_c", "person_d", "near", 0.05, 0.9, "near")
 
     snap = SceneGraphSnapshot(
         camera_id="cam_crowd",
@@ -31,12 +52,16 @@ def test_false_relationships_from_crowded_scenes() -> None:
         unattended_objects=(),
     )
 
-    # Process single frame
     tracker.process_frame("cam_crowd", entities, snap, None, now=100.0)
+    pairs = {(rel.entity_a, rel.entity_b) for rel in tracker.get_all_relationships()}
 
-    # Only gated pairs should be tracked, preventing 30*29/2 = 435 pair explosion
-    all_rels = tracker.get_all_relationships()
-    assert len(all_rels) <= 5
+    # The two pairs standing together are found...
+    assert ("person_a", "person_b") in pairs
+    assert ("person_c", "person_d") in pairs
+    # ...and thirty people do not become 435 associations.
+    assert len(pairs) < 30
+    # Nobody is paired with someone on the other side of the frame.
+    assert ("person_a", "person_c") not in pairs
 
 
 # 2. Trajectory Crossing vs Following Pattern

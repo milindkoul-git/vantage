@@ -218,11 +218,32 @@ vantage-main/
 - **Kinematic Dynamics**:
   - Speed measured in **entity heights per second ($h/s$)** to ensure distance invariance.
   - Posture classification: `standing`, `sitting`, `crouching`, `lying` via joint geometry ratios.
+  - **The skeleton is cross-checked against its own box.** A torso reading as
+    horizontal inside a box taller than it is wide is reported as `unknown`, not
+    as `lying`. MEASURED on 2,652 frames of street footage in which nobody lies
+    down: the pose engine reported `lying` 77 times, every one wrong, every one
+    inside a box 0.34-0.41 as wide as tall. The alternative - a posture
+    confidence floor - was measured first and rejected: removing all 77 needs a
+    floor of 0.40, which discards 92.5% of every correct posture, because the
+    confidence distributions overlap almost entirely.
 
 ### 4.6 Temporal Activity Recognition (Phase 5)
 - **Module**: `vantage.activity`
 - Recognizes: `walking`, `running`, `loitering`, `idle`, `sitting_down`, `standing_up`, `falling`, `arm_raised`.
 - Every observation is accompanied by an audit string (e.g. `0.65 h/s, held 100% of last 0.4s`).
+- **Two eligibility gates, both from real footage rather than from scenarios.**
+  `activity.labels` decides which detected classes have activities at all,
+  defaulting to `person`: these are verbs about people, and left open to every
+  class the engine reported that 73% of what it saw on five street clips was
+  walking or running - mostly cars, potted plants, traffic lights and handbags,
+  with `potted plant_2 is running` reaching the event log. Entities whose box was
+  predicted rather than detected are skipped outright; a coasting track drifts on
+  the tracker's motion model, and that drift was a further 20-26% of everything
+  reported. `EntityState.observed` had existed and been documented as
+  load-bearing since Phase 4, and was read by no consumer until this.
+- **The three default rules name `person` as well**, as belt to those braces:
+  the engine decides who has activities, a rule decides who it will alert about,
+  and widening one is not meant to widen the other.
 
 ### 4.7 Spatial Relations & Scene Graph (Phase 6)
 - **Module**: `vantage.spatial`
@@ -233,6 +254,14 @@ vantage-main/
 - **Module**: `vantage.events`
 - Transforms continuous observations into discrete security alerts.
 - Configurable suppression cooldowns per (rule, entity) pair to prevent alert storms.
+- Zone entry, exit and dwell rules ignore entities whose box was predicted rather
+  than detected: a coasting box drifting across a boundary is the motion model,
+  not somebody walking through a door.
+- **Measured on real footage.** Five street clips raised 138 events before these
+  gates, of which none were real - 49 on objects that cannot perform the verb and
+  4 false `fall` ALERTS. After: 57 events, 0 on non-people, 0 falls. The
+  remainder are all `running` on genuine people and mostly still wrong, for the
+  depth reason recorded under Known Limitations.
 
 ### 4.9 High-Throughput SQLite Storage & Heartbeat (Phase 8)
 - **Module**: `vantage.storage`
@@ -513,6 +542,31 @@ Measured on Intel Core CPU with Integrated GPU (Windows 11):
 | **Camera Signal Test** | Probing Latency | **$44.2\text{ ms}$** | Frame acquisition + base64 thumbnail generation |
 | **Dashboard JSON API** | Serving Rate | **$> 100\text{ req/sec}$** | Non-blocking standard library HTTP server |
 
+### End-to-end on real footage
+
+2,652 frames of five Creative Commons street clips (Wikimedia Commons) through
+the full pipeline - detection, tracking, pose, state, activity, spatial, events,
+incidents, relationships, storage. Chosen for the ways they differ: a 1080p
+street corner, a far-field tram stop, a dense pedestrian street with two dozen
+people at once, a 320x240 overhead crowd, and a near-dark walking POV.
+
+| Metric | Result |
+| :--- | :--- |
+| Throughput, 1080p with pose | **26-48 fps**, 0 dropped frames across all five clips |
+| Detection latency | 10-15 ms mean, p95 under 16 ms |
+| Stage health | every guard clean: 0 failures, 0 disabled |
+| Container formats | WebM/VP9, Ogg/Theora, both decoded; EOF handled cleanly |
+| Dark footage | reported *"source is delivering blank frames"* rather than analysing noise |
+
+The same run is what found the eligibility bugs recorded under 4.5, 4.6 and 4.8.
+Before those gates: **138 events raised, none of them real** - 49 about objects
+that cannot perform the verb, and 4 false `fall` ALERTS. After: **57 events, 0 on
+non-people, 0 falls**, all on genuine people. What remains is documented rather
+than claimed as fixed: those 57 are `running` notices on people who are walking
+toward the camera, where a scale-normalised speed with no ground plane cannot
+tell approach from pace.
+
+
 ---
 
 ## 9. CLI Command Reference & Operational Runbook
@@ -655,6 +709,38 @@ vantage.relationship
 └── service.py      # RelationshipService coordinating storage hydration, persistence & graph export
 ```
 
+### Candidate pair gating
+
+Three gates decide which pairs are scored at all, and the third was rewritten
+after being measured on real footage.
+
+1. **Scene graph edges** — pairs the transient per-camera scene graph already
+   links. Multi-camera pipeline only; the single-camera run builds no scene graph.
+2. **Pairs already in memory** — an existing association keeps being re-evaluated.
+3. **Proximity** — entities within `relationships.proximity_gate` of each other,
+   as a fraction of the frame.
+
+Gate 3 previously read *"pair everything when there are five entities or fewer"*,
+and that cliff was the whole behaviour on a single camera. Below six entities
+every pair was a candidate, including two fragments of one person left by an id
+switch; at six and above nothing ever was, because gate 1 needs a scene graph
+that pipeline does not build and gate 2 cannot seed itself. MEASURED: a corridor
+holding one or two people produced 34 associations, and a pedestrian street with
+24 people in frame at once produced **none at all, permanently** — the subsystem
+switched itself off in exactly the scene it exists for.
+
+The gate value was measured too, at 0.06 / 0.10 / 0.15 / 0.25 across three clips:
+the count of pairs *tracked* scales with it (a dense street runs 87 → 519) while
+the count that actually *score* above 0.20 stays at exactly one throughout. The
+gate bounds work; the scorer decides what is real. 0.15 keeps a crowded frame to
+a few hundred tracked pairs rather than the thousand-entry LRU cap.
+
+`relationships.labels` gates the feed as well, defaulting to `person`: an
+association is between people who keep turning up together, and left open, a clip
+of an almost-empty underpass produced 28 of them between a person, a television
+and a skateboard. Entities whose box was predicted rather than detected are not
+fed either.
+
 ---
 
 ## 13. Phase 19: Situational Incident Intelligence & Multi-Event Reasoning
@@ -717,7 +803,7 @@ subsystem is not attached and what would start it.
 
 ## 10. Test Suites & Continuous Verification
 
-The Vantage test suite contains **1,080+ tests** verifying zero regressions across all subsystems:
+The Vantage test suite contains **1,117 tests** verifying zero regressions across all subsystems:
 
 ```bash
 # Run entire test suite

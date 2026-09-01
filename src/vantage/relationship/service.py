@@ -28,12 +28,14 @@ class RelationshipService:
         following_config: FollowingDetectorConfig | None = None,
         auto_persist_interval_s: float = 30.0,
         camera_id: str = "multi_camera",
+        proximity_gate: float = 0.25,
     ) -> None:
         self.store = store
         self.camera_id = camera_id
         self.tracker = PersistentRelationshipTracker(
             scoring_config=scoring_config,
             following_config=following_config,
+            proximity_gate=proximity_gate,
         )
         self.auto_persist_interval_s = auto_persist_interval_s
         self._last_persist_time = time.time()

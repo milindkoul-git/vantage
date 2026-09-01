@@ -26,7 +26,11 @@ That gives a plainly separable plane::
     crouching   hip_knee low,  knee_ankle low      both segments folded
 
 Lying is settled before either ratio is computed, from the torso's angle to
-vertical, because a horizontal body makes "below" meaningless.
+vertical, because a horizontal body makes "below" meaningless - and then checked
+against the detector's own box, which is an independent reading of the same
+person. A horizontal torso inside a box taller than it is wide is a contradiction
+rather than a fall; see :data:`LYING_MIN_BOX_ASPECT` for what that is worth,
+measured.
 
 What this cannot do
 -------------------
@@ -62,6 +66,31 @@ LYING_ANGLE_DEG = 55.0
 Generous on purpose. A person leaning over a desk reaches 30-40 degrees and must
 not be reported as lying down, since in a later phase that is the difference
 between a routine observation and a fall alert.
+"""
+
+LYING_MIN_BOX_ASPECT = 0.6
+"""How wide a person's own box must be, relative to its height, before a
+horizontal torso is accepted as lying down.
+
+The skeleton and the box are independent readings of the same person, and where
+they disagree the box is the more reliable of the two: it comes from the
+detector, which had the whole frame, while the skeleton comes from a crop that
+may be a dozen noisy pixels tall.
+
+MEASURED, on 2,652 frames of five street clips in which nobody lies down and
+nobody falls. The pose engine reported ``lying`` 77 times, every one of them
+wrong. Their boxes ran 0.34-0.41 wide-over-tall: upright people, every one. So
+this gate removes all 77 and touches no other posture.
+
+The alternative was a confidence floor, and it was measured first and rejected:
+the confidence distributions overlap almost entirely - false ``lying`` had a
+median of 0.27 against standing's 0.20 - and a floor high enough to remove all
+77 (0.40) also discarded 92.5% of every correct posture. A signal that cannot
+separate the two is not a threshold problem.
+
+0.6 rather than 1.0 leaves headroom for a real one: someone lying at an angle to
+the camera, or with their legs out of frame, produces a box narrower than they
+are long. The measured false readings sit far below even this.
 """
 
 EXTENDED = 0.55
@@ -126,10 +155,24 @@ def classify(pose: Pose, min_keypoint_confidence: float = 0.3) -> PostureEstimat
     torso_evidence = min(shoulder[2], hip[2])
 
     if torso_tilt >= LYING_ANGLE_DEG:
+        box_aspect = pose.box.width / max(pose.box.height, 1e-6)
+        if box_aspect < LYING_MIN_BOX_ASPECT:
+            # The skeleton says horizontal and the box says upright. Reporting
+            # the skeleton anyway is what produced false falls on far-field
+            # footage: a person 40 pixels tall gives noisy joints, the torso
+            # vector flips, and the one ALERT rule in the default set fires.
+            # UNKNOWN rather than a guess at what they are instead - the
+            # measurement is contradicted, not merely uncertain.
+            return PostureEstimate(
+                Posture.UNKNOWN,
+                0.0,
+                f"torso reads {torso_tilt:.0f} degrees from vertical, but the box is "
+                f"{box_aspect:.2f} as wide as it is tall - too upright for a lying body",
+            )
         return PostureEstimate(
             Posture.LYING,
             torso_evidence * _margin(torso_tilt, LYING_ANGLE_DEG, 25.0),
-            f"torso {torso_tilt:.0f} degrees from vertical",
+            f"torso {torso_tilt:.0f} degrees from vertical, box {box_aspect:.2f} wide",
         )
 
     knee = _midpoint(joint, LEFT_KNEE, RIGHT_KNEE)

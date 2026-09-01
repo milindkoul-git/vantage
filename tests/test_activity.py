@@ -46,6 +46,7 @@ def make_state(
     dwell_s: float = 0.0,
     track_id: int = 1,
     label: str = "person",
+    observed: bool = True,
 ) -> EntityState:
     return EntityState(
         track_id=track_id,
@@ -57,7 +58,7 @@ def make_state(
         bearing_deg=90.0 if motion is MotionState.MOVING else None,
         distance=0.0,
         age_s=10.0,
-        observed=True,
+        observed=observed,
     )
 
 
@@ -514,6 +515,84 @@ class TestEngine:
         result = engine.update(self.state_result([make_state()]))
         assert len(result) == 1
         assert result.notable() == ()
+
+
+class TestWhoHasActivities:
+    """Two gates on eligibility, both found by running the thing on real footage.
+
+    Across five street clips the engine reported that 73% of everything it saw
+    was walking or running, most of it about cars, potted plants, traffic lights
+    and handbags, and a further fifth came from boxes the detector had stopped
+    seeing. `potted plant_2 is running` reached the event log. The rules are
+    about what people do and they measure motion from observations, so those are
+    the two things checked here.
+    """
+
+    def state_result(self, states, elapsed=DT, index=0):
+        from vantage.state.contracts import StateResult
+
+        return StateResult(
+            states=tuple(states),
+            source_id="t",
+            frame_index=index,
+            capture_wall=index * elapsed,
+            elapsed_s=elapsed,
+        )
+
+    def drive_engine(self, engine: ActivityEngine, state, frames: int = 40):
+        result = None
+        for i in range(frames):
+            result = engine.update(self.state_result([state], index=i))
+        assert result is not None
+        return result
+
+    def moving_fast(self, label: str, observed: bool = True):
+        return make_state(speed=2.0, motion=MotionState.MOVING, label=label, observed=observed)
+
+    def test_a_person_walking_is_reported(self) -> None:
+        """The control: without this the other two prove nothing."""
+        result = self.drive_engine(ActivityEngine(), self.moving_fast("person"))
+        assert result.entities
+        assert Activity.RUNNING in {o.activity for e in result.entities for o in e.observations}
+
+    def test_a_car_is_not_running(self) -> None:
+        result = self.drive_engine(ActivityEngine(), self.moving_fast("car"))
+        assert result.entities == ()
+
+    def test_a_potted_plant_is_not_running(self) -> None:
+        """Named for the event that was actually in the store."""
+        result = self.drive_engine(ActivityEngine(), self.moving_fast("potted plant"))
+        assert result.entities == ()
+
+    def test_widening_the_labels_lets_another_class_in(self) -> None:
+        """The gate is configuration, not a hard-coded species."""
+        engine = ActivityEngine(labels=("person", "dog"))
+        result = self.drive_engine(engine, self.moving_fast("dog"))
+        assert len(result.entities) == 1
+
+    def test_no_labels_at_all_is_refused(self) -> None:
+        """Silencing a subsystem is what `enabled: false` is for."""
+        with pytest.raises(ConfigError, match="labels"):
+            ActivityEngine(labels=())
+
+    def test_a_coasting_entity_reports_nothing(self) -> None:
+        """Its box is a prediction; the drift of a predictor is not motion."""
+        result = self.drive_engine(ActivityEngine(), self.moving_fast("person", observed=False))
+        assert result.entities == ()
+
+    def test_a_coasting_frame_does_not_erase_the_history_around_it(self) -> None:
+        """One hidden frame must not reset a dwell that took twenty seconds.
+
+        The engine skips the entity for that frame; it does not forget it.
+        """
+        engine = ActivityEngine()
+        seen = self.moving_fast("person")
+        hidden = self.moving_fast("person", observed=False)
+        for i in range(30):
+            engine.update(self.state_result([seen], index=i))
+        engine.update(self.state_result([hidden], index=30))
+        after = engine.update(self.state_result([seen], index=31))
+        assert Activity.RUNNING in {o.activity for e in after.entities for o in e.observations}
 
 
 class TestScenarioSuite:

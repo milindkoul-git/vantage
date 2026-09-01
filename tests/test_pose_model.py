@@ -253,7 +253,13 @@ class TestPipelineIntegration:
         assert result.pose_steps > 0
         assert result.pose_summary["model"] == MODEL
         assert result.pose_summary["license"] == "Apache-2.0"
+        # Synthetic circles are not people, so nothing is estimated - but the
+        # field is a run total now, not the last frame's count, and the two are
+        # reported separately. A five-clip evaluation had this summary announce
+        # "0 people estimated" for a stage that had produced 305 skeletons,
+        # because the final frame happened to be empty.
         assert result.pose_summary["people"] == 0
+        assert result.pose_summary["people_at_end"] == 0
         assert "state" in result.summary()
 
     def test_state_runs_without_pose(self) -> None:

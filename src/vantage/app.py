@@ -122,7 +122,8 @@ class RunResult:
             detail = self.pose_summary
             base += (
                 f"\npose: {self.pose_steps} passes on {detail.get('model', '?')}, "
-                f"{detail.get('people', 0)} people estimated, "
+                f"{detail.get('people', 0)} skeletons estimated "
+                f"({detail.get('people_at_end', 0)} at the end), "
                 f"{detail.get('mean_ms_per_person', 0.0):.1f} ms mean per person"
             )
             if detail.get("skipped"):
@@ -302,6 +303,11 @@ def run_ingestion(
     estimator = _build_pose_engine(config)
     latest_pose = None
     pose_steps = 0
+    # Run totals. The summary used to report the last frame's counts, so a stage
+    # that had estimated hundreds of skeletons announced "0 people estimated"
+    # whenever the footage ended with nobody in shot.
+    pose_people = 0
+    pose_over_budget = 0
     pose_latency = LatencyTracker(window=240)
     state_estimator = _build_state_estimator(config)
     latest_state = None
@@ -318,6 +324,9 @@ def run_ingestion(
     camera_id = config.source.id or "camera_01"
     incident_service = _build_incident_service(config, store, event_engine)
     relationship_service = _build_relationship_service(config, store)
+    relationship_labels = frozenset(
+        label.strip().lower() for label in config.relationships.labels if label.strip()
+    )
     incidents_seen: set[str] = set()
     live_feed, dashboard = _build_dashboard(
         config,
@@ -443,6 +452,8 @@ def run_ingestion(
                             if posed is not None:
                                 latest_pose = posed
                                 pose_steps += 1
+                                pose_people += len(latest_pose)
+                                pose_over_budget += latest_pose.skipped
                                 if latest_pose.poses:
                                     pose_latency.observe(
                                         latest_pose.total_ms / len(latest_pose)
@@ -531,6 +542,7 @@ def run_ingestion(
                                 latest_state,
                                 frame,
                                 camera_id,
+                                relationship_labels,
                             )
                         # Persistence last, and guarded: a full disk must lose
                         # rows, never frames.
@@ -714,7 +726,9 @@ def run_ingestion(
         tracking_steps=tracking_steps,
         tracking_summary=_tracking_summary(tracker, track_latency, tracking_steps),
         pose_steps=pose_steps,
-        pose_summary=_pose_summary(estimator, pose_latency, latest_pose, pose_steps),
+        pose_summary=_pose_summary(
+            estimator, pose_latency, latest_pose, pose_steps, pose_people, pose_over_budget
+        ),
         state_summary=_state_summary(latest_state),
         activity_summary=_activity_summary(latest_activity),
         spatial_summary=_spatial_summary(spatial_engine, latest_spatial),
@@ -1059,6 +1073,7 @@ def _build_relationship_service(config: VantageConfig, store: Any) -> Any | None
         store=store,
         auto_persist_interval_s=config.relationships.persist_interval_s,
         camera_id=config.source.id or "camera_01",
+        proximity_gate=config.relationships.proximity_gate,
     )
 
 
@@ -1101,12 +1116,20 @@ def _observe_relationships(
     state: Any,
     frame: Any,
     camera_id: str,
+    labels: frozenset[str],
 ) -> None:
     """Feed this frame's tracked positions into the relationship graph.
 
     Positions are the foot point normalised to the frame, because proximity
     between two people has to survive a change of resolution, and the pixel
     distance between two boxes does not.
+
+    Two gates, the same pair the activity engine applies and for the same
+    reasons. An association is between people, so a car parked next to a bench
+    is not one; and a coasting box is a prediction, so a pair of predictions
+    drifting alongside each other is not two people walking together. Without
+    them a clip of an empty underpass produced 28 associations between a person,
+    a television and a skateboard.
     """
     if tracking is None:
         return
@@ -1116,6 +1139,8 @@ def _observe_relationships(
     boxes = {track.track_id: track.box for track in tracking.tracks}
     active: list[tuple[str, float, float, float, float | None]] = []
     for entity in state:
+        if entity.label.lower() not in labels or not entity.observed:
+            continue
         box = boxes.get(entity.track_id)
         if box is None:
             continue
@@ -1210,7 +1235,19 @@ def _pose_summary(
     latency: LatencyTracker,
     latest: PoseResult | None,
     passes: int,
+    people_total: int,
+    skipped_total: int,
 ) -> dict[str, Any]:
+    """What pose did over the whole run, not on its last frame.
+
+    ``people`` and ``skipped`` were the final frame's counts until a five-clip
+    evaluation had this summary report "0 people estimated" for a stage that had
+    produced 305 skeletons in 300 frames - the clip simply ended with nobody in
+    shot. The mean-per-person timing beside it was the only hint that anything
+    had happened at all, and a reader would reasonably conclude the stage was
+    dead. Both are run totals now, with the last frame reported separately for
+    the "what is on screen right now" question it was accidentally answering.
+    """
     if estimator is None or not passes:
         return {}
     return {
@@ -1220,8 +1257,9 @@ def _pose_summary(
         "license": estimator.info.license,
         "keypoints": estimator.info.num_keypoints,
         "passes": passes,
-        "people": len(latest) if latest else 0,
-        "skipped": latest.skipped if latest else 0,
+        "people": people_total,
+        "people_at_end": len(latest) if latest else 0,
+        "skipped": skipped_total,
         "mean_ms_per_person": round(latency.mean, 2),
     }
 

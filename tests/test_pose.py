@@ -44,6 +44,12 @@ from vantage.tracking.contracts import Track, TrackingResult, TrackState
 
 INPUT_SIZE = (256, 192)  # (height, width)
 BOX = BoundingBox(100.0, 50.0, 300.0, 450.0)
+"""An upright person: 200px wide, 400px tall."""
+
+LYING_BOX = BoundingBox(100.0, 200.0, 500.0, 400.0)
+"""A person on the ground: wider than tall, which is what the detector produces
+for one. Posture reads the box as well as the skeleton, so a horizontal torso
+inside an upright box is a contradiction rather than a lying person."""
 
 
 def make_pose(points: dict[int, tuple[float, float]], *, score: float = 0.9, box=None) -> Pose:
@@ -294,18 +300,33 @@ class TestPosture:
         estimate = classify(make_pose(upright(200.0, 215.0, 230.0)))
         assert estimate.posture is Posture.CROUCHING
 
+    @staticmethod
+    def horizontal_torso() -> dict[int, tuple[float, float]]:
+        """Shoulders and hips side by side rather than stacked."""
+        return {
+            LEFT_SHOULDER: (100.0, 200.0),
+            RIGHT_SHOULDER: (100.0, 240.0),
+            LEFT_HIP: (250.0, 205.0),
+            RIGHT_HIP: (250.0, 245.0),
+        }
+
     def test_lying(self) -> None:
-        estimate = classify(
-            make_pose(
-                {
-                    LEFT_SHOULDER: (100.0, 200.0),
-                    RIGHT_SHOULDER: (100.0, 240.0),
-                    LEFT_HIP: (250.0, 205.0),
-                    RIGHT_HIP: (250.0, 245.0),
-                }
-            )
-        )
+        estimate = classify(make_pose(self.horizontal_torso(), box=LYING_BOX))
         assert estimate.posture is Posture.LYING
+
+    def test_a_horizontal_torso_in_an_upright_box_is_not_lying(self) -> None:
+        """The skeleton and the box are independent readings; disagreement is not a fall.
+
+        MEASURED: across 2,652 frames of street footage in which nobody lies
+        down, this was the whole of the false-positive population - 77 readings
+        of `lying`, every one inside a box between 0.34 and 0.41 as wide as it
+        was tall. Far-field people give noisy joints and the torso vector flips;
+        the box, which the detector drew from the whole frame, does not.
+        """
+        estimate = classify(make_pose(self.horizontal_torso(), box=BOX))
+        assert estimate.posture is Posture.UNKNOWN
+        assert estimate.confidence == 0.0
+        assert "too upright for a lying body" in estimate.reason
 
     def test_leaning_is_not_lying(self) -> None:
         """A person bent over a desk must not raise what will become a fall alert."""

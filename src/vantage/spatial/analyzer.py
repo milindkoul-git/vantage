@@ -464,4 +464,5 @@ def entity_spatial(track: Track, zones: tuple[ZoneOccupancy, ...]) -> EntitySpat
         label=track.label,
         zones=zones,
         ground_point=track.box.bottom_center,
+        observed=not track.is_coasting,
     )
